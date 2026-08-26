@@ -39,11 +39,19 @@ import (
 
 	"github.com/Cabbage4/quic-go/coalesce"
 	"github.com/Cabbage4/quic-go/crypto"
-	"github.com/Cabbage4/quic-go/errors"
 	"github.com/Cabbage4/quic-go/frames"
 	"github.com/Cabbage4/quic-go/header"
 	"github.com/Cabbage4/quic-go/packet"
 )
+
+// maxBufferedPackets caps how many not-yet-decryptable datagrams PacketIO
+// will retain while waiting for the corresponding receive keys to be installed
+// (e.g. coalesced Initial+Handshake where Handshake keys arrive late, or a
+// flood of packets just before the 1-RTT keys are ready). Without a cap an
+// attacker (or just a very fast peer) can drive this slice to unbounded size
+// and exhaust memory; each entry also pins the whole underlying datagram slice.
+// 256 is plenty for legitimate handshake ordering on a single connection.
+const maxBufferedPackets = 256
 
 // PacketIO manages the complete packet send/receive pipeline.
 type PacketIO struct {
@@ -406,6 +414,20 @@ func (p *PacketIO) RecvDatagram(datagram []byte) error {
 	return nil
 }
 
+// bufferPacket appends a not-yet-decryptable datagram for later retry,
+// enforcing the maxBufferedPackets cap. When the cap is reached we drop the
+// oldest entry (the one least likely to still be useful) rather than growing
+// without bound — protecting memory under a pre-keys packet flood. The slice
+// is owned under p.mu, which the caller already holds.
+func (p *PacketIO) bufferPacket(pkt []byte) {
+	if len(p.bufferedPackets) >= maxBufferedPackets {
+		// Drop oldest; keep the tail (most recent, most likely to matter).
+		p.bufferedPackets[0] = nil
+		p.bufferedPackets = p.bufferedPackets[1:]
+	}
+	p.bufferedPackets = append(p.bufferedPackets, pkt)
+}
+
 // RetryBufferedPackets re-attempts decryption of packets that were
 // buffered because recv keys were not yet available. This is called
 // by driveHandshakeLoop after flushing CRYPTO data and installing new
@@ -512,7 +534,7 @@ func (p *PacketIO) processLongHeaderPacket(pkt []byte) error {
 		// packet for later retry. The driveHandshakeLoop will call
 		// RetryBufferedPackets after installing new keys.
 		if strings.Contains(decErr.Error(), "no recv keys") {
-			p.bufferedPackets = append(p.bufferedPackets, pkt)
+			p.bufferPacket(pkt)
 			return nil
 		}
 		return fmt.Errorf("connection: packet unprotection failed: %w", decErr)
@@ -592,7 +614,7 @@ func (p *PacketIO) processShortHeaderPacket(pkt []byte) error {
 	if decErr != nil {
 		// Buffer if Application keys not yet available
 		if strings.Contains(decErr.Error(), "no recv keys") {
-			p.bufferedPackets = append(p.bufferedPackets, pkt)
+			p.bufferPacket(pkt)
 			return nil
 		}
 		return fmt.Errorf("connection: packet unprotection failed: %w", decErr)
@@ -889,73 +911,6 @@ func (p *PacketIO) BytesReceived() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.bytesReceived
-}
-
-// === Receive loop ===
-
-// StartReceiveLoop starts a background goroutine that reads from the UDP socket
-// and processes incoming datagrams.
-func (p *PacketIO) StartReceiveLoop() error {
-	p.mu.Lock()
-	conn := p.connUDP
-	p.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("connection: no UDP socket configured")
-	}
-
-	go func() {
-		buf := make([]byte, 65535)
-		for {
-			n, _, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				// Socket closed or error
-				return
-			}
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			_ = p.RecvDatagram(data)
-		}
-	}()
-
-	return nil
-}
-
-// === Convenience send methods ===
-
-// SendPing sends a PING frame at the Application level.
-func (p *PacketIO) SendPing() error {
-	_, err := p.SendPacket(crypto.EncryptionApplication, []frames.Frame{&frames.Ping{}})
-	return err
-}
-
-// SendHandshakeDone sends a HANDSHAKE_DONE frame (server only).
-func (p *PacketIO) SendHandshakeDone() error {
-	_, err := p.SendPacket(crypto.EncryptionApplication, []frames.Frame{&frames.HandshakeDone{}})
-	return err
-}
-
-// SendConnectionClose sends a CONNECTION_CLOSE frame.
-func (p *PacketIO) SendConnectionClose(errCode errors.TransportErrorCode, reason string) error {
-	cc := &frames.ConnectionClose{
-		ErrorCode:    uint64(errCode),
-		ReasonPhrase: reason,
-	}
-	if p.conn.State() == StateClosed {
-		cc.ApplicationError = true
-	}
-	_, err := p.SendPacket(crypto.EncryptionApplication, []frames.Frame{cc})
-	return err
-}
-
-// SendCryptoFrame sends a CRYPTO frame at the given encryption level.
-func (p *PacketIO) SendCryptoFrame(level crypto.EncryptionLevel, offset uint64, data []byte) error {
-	cf := &frames.Crypto{
-		Offset: offset,
-		Data:   data,
-	}
-	_, err := p.SendPacket(level, []frames.Frame{cf})
-	return err
 }
 
 // FlushPendingControlFrames sends all pending control frames (ACKs, flow control, etc.)

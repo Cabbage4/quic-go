@@ -211,7 +211,7 @@ func (h *AckHandler) IsDuplicate(pn uint64, space PNSpace) bool {
 func (h *AckHandler) LargestReceivedPN(space PNSpace) *uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	pn, ok := h.trackers[space].LargestAcknowledged()
+	pn, ok := h.trackers[space].LargestReceived()
 	if !ok {
 		return nil
 	}
@@ -258,11 +258,4 @@ func (h *AckHandler) GetAckDelay(space PNSpace) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.trackers[space].GetAckDelay()
-}
-
-// LargestAcknowledged returns the highest packet number tracked for a space.
-func (h *AckHandler) LargestAcknowledged(space PNSpace) (uint64, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.trackers[space].LargestAcknowledged()
 }

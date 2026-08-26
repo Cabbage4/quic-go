@@ -68,6 +68,19 @@ type FrameHandler struct {
 	// Used to process ACKs and update stream state machines
 	sentFrames    map[uint64][]sentFrameInfo
 	sentFramesMu  sync.Mutex
+
+	// receivedNewToken holds the last NEW_TOKEN received from the server
+	// (RFC 9000 §19.7), for the client to echo on future Initial packets.
+	// Per-connection state under h.mu (was a package-global var, which raced
+	// across goroutines and cross-contaminated connections sharing the process).
+	receivedNewToken []byte
+
+	// closeFrameSent latches that the CONNECTION_CLOSE frame has been queued
+	// for sending once. Without this, GenerateControlFrames re-appends the
+	// close frame on every per-packet flush while Draining — re-sending
+	// CONNECTION_CLOSE repeatedly, which RFC 9000 §10.2 forbids ("an endpoint
+	// in the draining state MUST NOT send any packets").
+	closeFrameSent bool
 }
 
 // pendingCrypto holds queued CRYPTO frame data waiting to be fed to TLS.
@@ -315,24 +328,30 @@ func (h *FrameHandler) handleCryptoFrame(f *frames.Crypto, pnSpace PNSpace) (boo
 	return true, nil
 }
 
-// receivedNewToken stores the last NEW_TOKEN from the server (RFC 9000 §19.7).
-// Clients store this token and include it in future Initial packets for
-// address validation, allowing the server to skip Retry.
-var receivedNewToken []byte
-
+// handleNewToken stores a NEW_TOKEN received from the server (RFC 9000 §19.7).
+// Clients keep it to include in future Initial packets for address validation,
+// letting the server skip Retry. Stored per-connection under h.mu.
 func (h *FrameHandler) handleNewToken(f *frames.NewToken) (bool, error) {
-	// Client receives a NEW_TOKEN from the server for address validation.
-	// Store it for use in future connections (RFC 9000 §8.1.4).
 	if len(f.Token) > 0 {
-		receivedNewToken = make([]byte, len(f.Token))
-		copy(receivedNewToken, f.Token)
+		tok := make([]byte, len(f.Token))
+		copy(tok, f.Token)
+		h.mu.Lock()
+		h.receivedNewToken = tok
+		h.mu.Unlock()
 	}
 	return true, nil
 }
 
 // GetNewToken returns the last received NEW_TOKEN, if any.
 func (h *FrameHandler) GetNewToken() []byte {
-	return receivedNewToken
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.receivedNewToken) == 0 {
+		return nil
+	}
+	out := make([]byte, len(h.receivedNewToken))
+	copy(out, h.receivedNewToken)
+	return out
 }
 
 func (h *FrameHandler) handleStreamFrame(f *frames.Stream) (bool, error) {
@@ -493,10 +512,14 @@ func (h *FrameHandler) GenerateControlFrames(pnSpace PNSpace) []frames.Frame {
 		out = append(out, updates...)
 	}
 
-	// CONNECTION_CLOSE (if draining)
-	if h.conn.State() == StateDraining {
+	// CONNECTION_CLOSE (if draining). Latched: queue at most once, otherwise
+	// the per-packet control-frame flush would re-send CONNECTION_CLOSE on
+	// every received packet, violating RFC 9000 §10.2 (a draining endpoint
+	// MUST NOT send packets) and storming the peer.
+	if h.conn.State() == StateDraining && !h.closeFrameSent {
 		if cf := h.conn.CloseFrame(); cf != nil {
 			out = append(out, cf)
+			h.closeFrameSent = true
 		}
 	}
 

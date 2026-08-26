@@ -205,8 +205,16 @@ func (t *Tracker) MarkAcked() {
 	t.pending = false
 }
 
-// LargestAcknowledged returns the highest packet number in the tracker.
-func (t *Tracker) LargestAcknowledged() (uint64, bool) {
+// LargestReceived returns the largest packet number we have received from the
+// peer in this PN space (the high end of the highest tracked received range),
+// or (0,false) if no packets have been received yet.
+//
+// Despite living in the ACK tracker, this is the largest *received* packet,
+// not the largest we have acked — it is the correct context for reconstructing
+// the next incoming packet's truncated packet number (RFC 9000 §17.3.2 /
+// Appendix A.3 use "largest packet number successfully processed in the current
+// space"). Renamed from LargestAcknowledged to reflect what it actually returns.
+func (t *Tracker) LargestReceived() (uint64, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.ranges) == 0 {
