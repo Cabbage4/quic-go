@@ -494,7 +494,7 @@ Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scala
 
 ### Remaining limitations
 
-- **Bulk transfer (8 MiB echo) still stalls.** The earlier "deadlock" was mis-diagnosed: the real root cause was that `Stream.Write` emitted the entire buffer as one STREAM frame in one packet — an oversized UDP datagram the kernel drops. `Write` now chunks into ≤1100-byte packets, so it completes (8 MiB queued in ~52 ms) and echo data flows, but the round-trip still stalls before the full 8 MiB finishes within 90 s — a deeper receive-path / per-packet-overhead issue under sustained throughput, not yet diagnosed. (The request-rate workload uses tiny payloads and is unaffected.)
+- **Bulk transfer is flaky.** `Stream.Write` chunking (see "What was optimized" #3) fixed the write side: it now completes (8 MiB queued in ~52 ms) and echo data flows. When it succeeds, a 4 MiB echo round-trip completes in ~130 ms (~60 MiB/s / ~500 Mbit/s) and 1 MiB in ~60 ms (~33 MiB/s) — a major change from "never completes". But it is **flaky**: ~⅔ of runs stall (no progress within 15 s) regardless of transfer size or whether the server is fresh. The stall is a per-connection race in the receive/delivery path under high packet rate, root cause not yet pinned (neither side is CPU-bound during the stall; `sample` shows both idle/blocked). 8 MiB stalls more often than 1–4 MiB. (The request-rate workload uses tiny payloads and is unaffected.)
 - **ACK frequency is effectively 1**: one ACK packet per ack-eliciting received packet (no coalescing or delayed ACK); each request still costs roughly ~10 packets on the wire.
 - NewReno-style congestion control, no pacing.
 
@@ -502,7 +502,7 @@ Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scala
 
 Throughput is still well below a production stack (the reference [quic-go](https://github.com/quic-go/quic-go) reaches multi-Gbit/s and tens of thousands of req/s), which is expected for a single-file-per-concern learning implementation. The highest-leverage remaining improvements, in priority order:
 
-1. **Diagnose & fix the bulk-transfer echo stall** — `Write` now chunks correctly; the remaining stall is in the receive/delivery path under sustained throughput (per-packet overhead at ~7,000 packets / 8 MiB, plus an as-yet-unidentified stall point).
+1. **Pin & fix the bulk-transfer flaky race** — `Write` now chunks correctly and transfers reach ~60 MiB/s when they succeed, but ~⅔ of runs stall; a per-connection receive-path race (both sides idle/blocked during the stall) is the remaining blocker.
 2. **ACK coalescing / delayed ACK** — collapse ~10 packets/request to ~2-3.
 3. Pacing and a more modern congestion controller (e.g. BBR).
 
