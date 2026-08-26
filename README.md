@@ -466,4 +466,37 @@ cd quic-go && go run ./cmd/demo
 - SDK Integration: Complete — SDK uses connection-layer PacketIO/FrameHandler/stream.Manager pipeline with Coordinator lifecycle management
 - **SDK TLS Mode: Complete — `Config.TLSMode=true` enables full TLS 1.3 + AEAD packet protection**. See the [TLS Quick Start](#tls-quick-start) section above and `cmd/tls-demo/` for a runnable demo.
 
+## Performance
+
+This is a from-scratch, learning-oriented implementation — no performance optimization has been done. The numbers below are a baseline, not a target. All measurements are on loopback (`127.0.0.1`), so they reflect pure stack overhead with no network RTT.
+
+### Methodology
+
+- **Request rate**: single QUIC connection, serial (one in-flight request at a time) GET requests with tiny (~tens of bytes) payloads, plaintext path (`TLSMode: false`), run via the `http3-go` companion demo (which depends on this `quic-go` SDK): `go run ./cmd/demo -server -addr 127.0.0.1:PORT` and `go run ./cmd/demo -addr 127.0.0.1:PORT -n N`.
+- **Bulk transfer**: 8 MiB echoed back over a single bidirectional stream via `cmd/echo`.
+
+### Results — request rate (single connection, loopback)
+
+| Requests (N) | Total time | Throughput | Latency / request |
+|---:|---:|---:|---:|
+| 300  | 0.97 s | ~310 req/s | 3.2 ms |
+| 500  | 2.40 s | ~208 req/s | 4.8 ms |
+| 1000 | 9.60 s | ~104 req/s | 9.6 ms |
+
+### Findings
+
+- **Per-request latency grows linearly with N** (3.2 → 9.6 ms as N goes 300 → 1000): a scalability issue. The main contributor is that cumulative ACK ranges grow with the number of packets sent, and each incoming ACK re-materializes and iterates the full acknowledged-packet set (an O(N) pass per ACK, capped at 2^20 entries to bound memory). The sent-frame tracking map also grows with N.
+- **Bulk transfer (8 MiB echo) deadlocks** — neither write-all-then-read nor concurrent-read completes within 15 s. This exposes flow-control / write-blocking problems under large transfers, consistent with the known gap that the connection-level flow-control window is not propagated correctly in all paths.
+- **ACK frequency is effectively 1**: one ACK packet is sent per ack-eliciting received packet (no ACK coalescing or delayed ACK), so each request costs roughly ~10 packets on the wire.
+- NewReno-style congestion control, no pacing.
+
+### Takeaway
+
+Throughput is orders of magnitude below a production stack (the reference [quic-go](https://github.com/quic-go/quic-go) reaches multi-Gbit/s and tens of thousands of req/s). That is expected for an unoptimized, single-file-per-concern learning implementation. The highest-leverage improvements, in priority order:
+
+1. **ACK coalescing / delayed ACK** — collapse ~10 packets/request to ~2-3.
+2. **Fix connection-level flow-control window growth** so bulk transfers no longer deadlock.
+3. **Lazy ACK-range iteration** in `ParseAckFrame` (iterate ranges instead of materializing a slice), eliminating the O(N)-per-ACK cost.
+4. Pacing and a more modern congestion controller (e.g. BBR).
+
 For a production QUIC implementation in Go, see [quic-go](https://github.com/quic-go/quic-go).
