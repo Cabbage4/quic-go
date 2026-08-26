@@ -15,7 +15,15 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/Cabbage4/quic-go/frames"
 )
+
+// FlowControlUpdate represents a flow control frame that needs to be sent.
+// It holds either a MAX_DATA, MAX_STREAM_DATA, DATA_BLOCKED, or STREAM_DATA_BLOCKED frame.
+type FlowControlUpdate struct {
+	Frame frames.Frame
+}
 
 // Stream type constants based on stream ID bits.
 const (
@@ -74,23 +82,28 @@ func (s StreamState) String() string {
 
 // SendState manages the sending side of a stream.
 type SendState struct {
-	mu       sync.Mutex
-	state    StreamState
-	sendBuf  []byte
-	offset   uint64 // next byte offset to send
-	finSent  bool
-	maxData  uint64 // flow control limit for sending
+	mu           sync.Mutex
+	state        StreamState
+	sendBuf      []byte
+	offset       uint64 // next byte offset to send
+	finSent      bool
+	maxData      uint64 // flow control limit for sending
+	ackedOffset  uint64 // highest contiguous offset acknowledged
+	ackedFin     bool  // whether FIN has been acknowledged
 }
 
 // RecvState manages the receiving side of a stream.
 type RecvState struct {
-	mu          sync.Mutex
-	state       StreamState
-	recvBuf     []byte
-	recvOffset  uint64 // next expected byte offset
-	finReceived bool
-	finalSize   uint64
-	maxData     uint64 // flow control limit for receiving
+	mu            sync.Mutex
+	state         StreamState
+	recvBuf       []byte
+	recvOffset    uint64 // next expected byte offset (consumed by Read)
+	recvNextOffset uint64 // highest contiguous offset received
+	finReceived   bool
+	finalSize     uint64
+	maxData       uint64 // flow control limit for receiving
+	consumedOffset uint64 // how much data has been consumed by Read()
+	windowUpdatePending bool
 }
 
 // Stream represents a QUIC stream.
@@ -188,6 +201,7 @@ func (s *Stream) CloseSending() error {
 }
 
 // Read reads received data from the stream (application-level).
+// After reading, it checks if a flow control window update should be sent.
 func (s *Stream) Read(p []byte) (int, error) {
 	s.recv.mu.Lock()
 	defer s.recv.mu.Unlock()
@@ -206,6 +220,17 @@ func (s *Stream) Read(p []byte) (int, error) {
 	n := copy(p, s.recv.recvBuf)
 	s.recv.recvBuf = s.recv.recvBuf[n:]
 	s.recv.recvOffset += uint64(n)
+	s.recv.consumedOffset += uint64(n)
+
+	// Check if we should send a window update (RFC 9000 §4.2)
+	// When the consumed data exceeds a threshold, update the window
+	if s.recv.maxData > 0 && s.recv.consumedOffset > 0 {
+		// Update window when we've consumed more than half the window size
+		windowSize := s.recv.maxData
+		if s.recv.consumedOffset >= windowSize/2 {
+			s.recv.windowUpdatePending = true
+		}
+	}
 
 	if s.recv.finReceived && len(s.recv.recvBuf) == 0 {
 		s.recv.state = StateDataReceived
@@ -284,6 +309,11 @@ func (s *Stream) ReceiveData(offset uint64, data []byte, fin bool) error {
 	// Track total data received on connection
 	s.connDataReceived += uint64(len(effData))
 
+	// Track highest received offset
+	if endOffset > s.recv.recvNextOffset {
+		s.recv.recvNextOffset = endOffset
+	}
+
 	if fin {
 		s.recv.finReceived = true
 		s.recv.finalSize = endOffset
@@ -311,6 +341,133 @@ func (s *Stream) UpdateRecvMaxData(maxData uint64) {
 	if maxData > s.recv.maxData {
 		s.recv.maxData = maxData
 	}
+}
+
+// === Flow Control Window Auto-Update (RFC 9000 §4.2) ===
+
+// NeedsWindowUpdate returns true if this stream's receive window should be updated.
+// This happens when the application has consumed enough data that a
+// MAX_STREAM_DATA frame should be sent to the peer.
+func (s *Stream) NeedsWindowUpdate() bool {
+	s.recv.mu.Lock()
+	defer s.recv.mu.Unlock()
+	return s.recv.windowUpdatePending
+}
+
+// GenStreamWindowUpdate generates a MAX_STREAM_DATA frame for this stream.
+// The new window is set to consumedOffset + initialWindow (doubling the available window).
+// Returns the frame and clears the pending flag.
+func (s *Stream) GenStreamWindowUpdate(windowIncrement uint64) *frames.MaxStreamData {
+	s.recv.mu.Lock()
+	defer s.recv.mu.Unlock()
+
+	newMax := s.recv.consumedOffset + windowIncrement
+	if newMax <= s.recv.maxData {
+		// No update needed
+		s.recv.windowUpdatePending = false
+		return nil
+	}
+	s.recv.maxData = newMax
+	s.recv.windowUpdatePending = false
+	return &frames.MaxStreamData{
+		StreamID:    s.ID,
+		MaximumData: newMax,
+	}
+}
+
+// GenConnWindowUpdate generates a MAX_DATA frame for the connection.
+// Called when the total consumed data on the connection warrants a window update.
+func (s *Stream) GenConnWindowUpdate(connConsumed, connMaxData, windowIncrement uint64) *frames.MaxData {
+	newMax := connConsumed + windowIncrement
+	if newMax <= connMaxData {
+		return nil
+	}
+	return &frames.MaxData{
+		MaximumData: newMax,
+	}
+}
+
+// === DATA_BLOCKED / STREAM_DATA_BLOCKED Frame Generation (§4.1) ===
+
+// GenStreamDataBlocked generates a STREAM_DATA_BLOCKED frame if this stream
+// is flow-control blocked on the send side.
+// Returns nil if not blocked.
+func (s *Stream) GenStreamDataBlocked() *frames.StreamDataBlocked {
+	s.send.mu.Lock()
+	defer s.send.mu.Unlock()
+
+	// Only generate if we're actually blocked (offset >= maxData)
+	if s.send.offset < s.send.maxData {
+		return nil
+	}
+	return &frames.StreamDataBlocked{
+		StreamID:    s.ID,
+		MaximumData: s.send.maxData,
+	}
+}
+
+// GenDataBlocked generates a DATA_BLOCKED frame if the connection-level
+// flow control is blocking sends.
+// Returns nil if not blocked.
+func (s *Stream) GenDataBlocked() *frames.DataBlocked {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.connDataSent < s.connMaxData {
+		return nil
+	}
+	return &frames.DataBlocked{
+		MaximumData: s.connMaxData,
+	}
+}
+
+// IsSendBlocked returns true if the stream is blocked by flow control
+// on the sending side (either stream-level or connection-level).
+func (s *Stream) IsSendBlocked() bool {
+	s.send.mu.Lock()
+	blocked := s.send.offset >= s.send.maxData
+	s.send.mu.Unlock()
+	if blocked {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connDataSent >= s.connMaxData
+}
+
+// === ACK Integration (§3 State Machine) ===
+
+// MarkAcked updates the acknowledged offset for this stream's send side.
+// When all sent data (including FIN) is acknowledged, transitions to StateDataSent.
+func (s *Stream) MarkAcked(offset uint64, finAcked bool) {
+	s.send.mu.Lock()
+	defer s.send.mu.Unlock()
+
+	if offset > s.send.ackedOffset {
+		s.send.ackedOffset = offset
+	}
+	if finAcked {
+		s.send.ackedFin = true
+	}
+
+	// State transition: StateSendEnd → StateDataSent when all data + FIN is acked
+	if s.send.state == StateSendEnd && s.send.ackedFin && s.send.ackedOffset >= s.send.offset {
+		s.send.state = StateDataSent
+	}
+}
+
+// AckedOffset returns the highest contiguous acknowledged offset.
+func (s *Stream) AckedOffset() uint64 {
+	s.send.mu.Lock()
+	defer s.send.mu.Unlock()
+	return s.send.ackedOffset
+}
+
+// AllDataAcked returns true if all sent data (including FIN) has been acknowledged.
+func (s *Stream) AllDataAcked() bool {
+	s.send.mu.Lock()
+	defer s.send.mu.Unlock()
+	return s.send.ackedOffset >= s.send.offset && (!s.send.finSent || s.send.ackedFin)
 }
 
 // SendMaxData returns the current flow control limit for sending.
@@ -574,4 +731,111 @@ func (m *Manager) AddConnDataSent(n uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.connDataSent += n
+}
+
+// === Connection-Level Flow Control Window Update ===
+
+// connConsumedOffset tracks total data consumed (read) across all streams.
+// This is used to determine when to send MAX_DATA frames.
+func (m *Manager) connConsumedOffset() uint64 {
+	total := uint64(0)
+	for _, s := range m.streams {
+		s.recv.mu.Lock()
+		total += s.recv.consumedOffset
+		s.recv.mu.Unlock()
+	}
+	return total
+}
+
+// PendingWindowUpdates returns all flow control frames that need to be sent.
+// This includes:
+//   - MAX_STREAM_DATA for streams that have consumed enough data
+//   - MAX_DATA for the connection if enough data has been consumed
+//   - DATA_BLOCKED / STREAM_DATA_BLOCKED for blocked streams
+func (m *Manager) PendingWindowUpdates(streamWindowIncrement, connWindowIncrement uint64) []frames.Frame {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var updates []frames.Frame
+
+	// Check each stream for window updates and blocked frames
+	for _, s := range m.streams {
+		// Stream-level window update (MAX_STREAM_DATA)
+		if s.NeedsWindowUpdate() {
+			if msd := s.GenStreamWindowUpdate(streamWindowIncrement); msd != nil {
+				updates = append(updates, msd)
+			}
+		}
+
+		// Stream-level blocked (STREAM_DATA_BLOCKED)
+		if sdb := s.GenStreamDataBlocked(); sdb != nil {
+			updates = append(updates, sdb)
+		}
+
+		// Connection-level blocked (DATA_BLOCKED)
+		if db := s.GenDataBlocked(); db != nil {
+			updates = append(updates, db)
+		}
+	}
+
+	// Connection-level window update (MAX_DATA)
+	consumed := m.connConsumedOffset()
+	if m.connMaxData > 0 && consumed >= m.connMaxData/2 {
+		newMax := consumed + connWindowIncrement
+		if newMax > m.connMaxData {
+			m.connMaxData = newMax
+			updates = append(updates, &frames.MaxData{
+				MaximumData: newMax,
+			})
+		}
+	}
+
+	return updates
+}
+
+// RegisterLocalStream registers a locally-created stream in the manager.
+// This is used when the SDK creates a stream directly and needs it
+// tracked by the manager for receive-side operations.
+func (m *Manager) RegisterLocalStream(id uint64, s *Stream) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.streams[id]; !ok {
+		m.streams[id] = s
+		isBidi := (id & 0x02) == 0
+		if isBidi {
+			m.openStreamsBidi++
+		} else {
+			m.openStreamsUni++
+		}
+	}
+}
+
+// ProcessAckForStream updates stream state machines when stream data is acknowledged.
+// This handles the SendEnd → DataSent state transition (RFC 9000 §3.1).
+func (m *Manager) ProcessAckForStream(streamID uint64, ackedOffset uint64, finAcked bool) {
+	m.mu.Lock()
+	s, ok := m.streams[streamID]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	s.MarkAcked(ackedOffset, finAcked)
+}
+
+// PendingAcks returns all streams that have completed acknowledgement
+// (all data + FIN acked), for state machine transitions.
+func (m *Manager) PendingAckedStreams() []uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var ids []uint64
+	for id, s := range m.streams {
+		if s.AllDataAcked() {
+			sendState, _ := s.State()
+			if sendState == StateSendEnd || sendState == StateSend {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
 }

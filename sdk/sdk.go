@@ -4,9 +4,12 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/Cabbage4/quic-go/connection"
+	"github.com/Cabbage4/quic-go/crypto"
 	"github.com/Cabbage4/quic-go/header"
+	"github.com/Cabbage4/quic-go/stream"
 	"github.com/Cabbage4/quic-go/transport"
 	"github.com/Cabbage4/quic-go/varint"
 )
@@ -184,7 +187,7 @@ func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, radd
 	tp := transport.Params(params)
 	conn.SetPeerParams(tp)
 
-	// Register the connection with the DCID from the Initial packet
+	// Initialize connection-layer subsystems
 	c := &Conn{
 		conn:           conn,
 		connMgr:        conn.ConnIDManager(),
@@ -199,6 +202,9 @@ func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, radd
 		streams:        make(map[uint64]*Stream),
 		streamsMu:      newNetMutex(),
 	}
+
+	// Initialize subsystems
+	c.initSubsystems(true, tp)
 
 	// Add to connection table
 	dcidKey := string(hdr.DestConnID)
@@ -259,6 +265,64 @@ func (c *Conn) sendServerInitial() {
 	}
 }
 
+// initSubsystems creates and wires the connection-layer subsystems:
+// KeySetStore, AckHandler, RecoveryManager, FrameHandler, stream.Manager,
+// and PacketIO. In plaintext mode, encryption is skipped.
+func (c *Conn) initSubsystems(isServer bool, tp transport.Params) {
+	// Create key store (for future TLS integration)
+	c.keyStore = connection.NewKeySetStore()
+
+	// Create ACK handler
+	c.ackHandler = connection.NewAckHandler()
+
+	// Create recovery manager
+	maxAckDelay := time.Duration(tp.MaxAckDelay) * time.Millisecond
+	c.recovery = connection.NewRecoveryManager(
+		maxAckDelay,
+		!isServer, // isClient
+	)
+
+	// Create stream manager
+	c.streamMgr = stream.NewManager(
+		isServer,
+		tp.InitialMaxData,
+		tp.InitialMaxStreamDataBidiLocal,
+		tp.InitialMaxStreamDataBidiRemote,
+		tp.InitialMaxStreamDataUni,
+		tp.InitialMaxStreamsBidi,
+		tp.InitialMaxStreamsUni,
+	)
+
+	// Create frame handler
+	c.frameHandler = connection.NewFrameHandler(
+		c.conn,
+		c.streamMgr,
+		c.ackHandler,
+		c.recovery,
+		c.keyStore,
+	)
+
+	// Create packet I/O pipeline
+	c.packetIO = connection.NewPacketIO(
+		c.conn,
+		c.keyStore,
+		c.frameHandler,
+		c.recovery,
+		c.ackHandler,
+	)
+	c.packetIO.SetUDPConn(c.udpConn, c.remoteAddr)
+	c.packetIO.SetConnIDs(c.connMgr.SrcConnID(), c.connMgr.DestConnID())
+	c.packetIO.SetPlaintextMode(true) // SDK uses plaintext mode for now
+
+	// Set up key discard callback to discard PN space
+	c.keyStore.SetDiscardCallback(func(level crypto.EncryptionLevel) {
+		pnSpace := connection.EncryptionLevelToPNSpace(level)
+		c.ackHandler.DiscardPNSpace(pnSpace)
+		c.recovery.OnPacketNumberSpaceDiscarded(pnSpace)
+		c.frameHandler.CleanUpSentFrames(pnSpace)
+	})
+}
+
 // === Dialer (Client) ===
 
 // Dial establishes a QUIC connection to the given address.
@@ -312,6 +376,9 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 		streams:        make(map[uint64]*Stream),
 		streamsMu:      newNetMutex(),
 	}
+
+	// Initialize subsystems
+	c.initSubsystems(false, config.toTransportParams())
 
 	// Send Initial packet
 	if err := c.sendInitial(srcCID, initialDCID); err != nil {
@@ -425,17 +492,34 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 		// On client side: update our DCID to the server's SCID
 		if !c.isServer && len(hdr.SrcConnID) > 0 {
 			c.connMgr.InitDestConnID(hdr.SrcConnID)
+			if c.packetIO != nil {
+				c.packetIO.SetConnIDs(c.connMgr.SrcConnID(), c.connMgr.DestConnID())
+			}
 		}
 
-		// Process payload frames
+		// Process payload frames via FrameHandler
+		var pnSpace connection.PNSpace
+		switch hdr.Type {
+		case header.PacketTypeInitial:
+			pnSpace = connection.PNSpaceInitial
+		case header.PacketTypeHandshake:
+			pnSpace = connection.PNSpaceHandshake
+		default:
+			pnSpace = connection.PNSpaceApplication
+		}
+
 		if len(hdr.Payload) > 0 {
-			c.processFrames(hdr.Payload, connection.PNSpaceInitial)
+			c.frameHandler.ProcessFrames(hdr.Payload, pnSpace, hdr.PacketNumber)
+			c.ackHandler.OnPacketReceived(hdr.PacketNumber, pnSpace, true)
 		}
 
 		// If we got a Handshake or HANDSHAKE_DONE, transition to established
 		if hdr.Type == header.PacketTypeHandshake {
 			c.conn.SetState(connection.StateEstablished)
 		}
+
+		// Flush pending ACKs
+		c.flushPendingControlFrames()
 	} else {
 		// Short header (1-RTT data packet)
 		dcidLen := len(c.connMgr.SrcConnID())
@@ -447,9 +531,124 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 			return
 		}
 		if len(hdr.Payload) > 0 {
-			c.processFrames(hdr.Payload, connection.PNSpaceApplication)
+			c.frameHandler.ProcessFrames(hdr.Payload, connection.PNSpaceApplication, hdr.PacketNumber)
+			c.ackHandler.OnPacketReceived(hdr.PacketNumber, connection.PNSpaceApplication, true)
+		}
+
+		// Flush pending ACKs
+		c.flushPendingControlFrames()
+	}
+
+	// Deliver any received stream data to SDK-level Stream wrappers
+	c.deliverReceivedStreamData()
+}
+
+// deliverReceivedStreamData pulls data from stream.Manager streams into
+// the SDK-level Stream wrappers' read channels.
+// This is called after packet processing to bridge the connection-layer
+// stream.Manager data into the SDK's channel-based Stream API.
+func (c *Conn) deliverReceivedStreamData() {
+	if c.streamMgr == nil {
+		return
+	}
+
+	c.streamsMu.Lock()
+	defer c.streamsMu.Unlock()
+
+	for id, sdkStream := range c.streams {
+		// Get the underlying stream from the manager
+		mgrStream, ok := c.streamMgr.Get(id)
+		if !ok {
+			continue
+		}
+
+		// Read any available data from the manager's stream (non-blocking)
+		// We try to read one chunk at a time to avoid blocking
+		buf := make([]byte, 65536)
+		n, err := mgrStream.Read(buf)
+		if n > 0 {
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			select {
+			case sdkStream.readCh <- data:
+			case <-sdkStream.closeCh:
+				continue
+			}
+		}
+		// If EOF, signal it
+		if err != nil && n == 0 {
+			select {
+			case sdkStream.readCh <- nil: // nil = EOF signal
+			case <-sdkStream.closeCh:
+			}
 		}
 	}
+
+	// Also check for new peer-initiated streams that need to be
+	// delivered to AcceptStream
+	for _, mgrStream := range c.streamMgr.AllStreams() {
+		id := mgrStream.ID
+		if _, exists := c.streams[id]; !exists {
+			// New peer-initiated stream — create SDK wrapper
+			sdkStream := c.createPeerStreamLocked(id)
+			if sdkStream != nil {
+				// Read initial data
+				buf := make([]byte, 65536)
+				n, _ := mgrStream.Read(buf)
+				if n > 0 {
+					data := make([]byte, n)
+					copy(data, buf[:n])
+					select {
+					case sdkStream.readCh <- data:
+					case <-sdkStream.closeCh:
+					}
+				}
+				// Notify AcceptStream for bidirectional streams
+				if sdkStream.bidi {
+					select {
+					case c.acceptStreamCh <- sdkStream:
+					default:
+					}
+				} else {
+					// For unidirectional streams, also notify AcceptStream
+					select {
+					case c.acceptStreamCh <- sdkStream:
+					default:
+					}
+				}
+			}
+		}
+	}
+}
+
+// createPeerStreamLocked creates an SDK Stream wrapper for a peer-initiated stream.
+// Caller must hold c.streamsMu.
+func (c *Conn) createPeerStreamLocked(id uint64) *Stream {
+	if c.streams == nil {
+		c.streams = make(map[uint64]*Stream)
+	}
+	if s, ok := c.streams[id]; ok {
+		return s
+	}
+
+	bidi := (id & 0x02) == 0
+	s := &Stream{
+		id:      id,
+		bidi:    bidi,
+		conn:    c,
+		readCh:  make(chan []byte, 64),
+		closeCh: make(chan struct{}),
+	}
+	c.streams[id] = s
+	return s
+}
+
+// flushPendingControlFrames sends pending ACK and flow control frames.
+func (c *Conn) flushPendingControlFrames() {
+	if c.packetIO == nil {
+		return
+	}
+	c.packetIO.FlushPendingControlFrames()
 }
 
 // processFrames decodes and dispatches frames in a packet payload.
@@ -706,6 +905,20 @@ func (c *Conn) openStream(bidi bool) (*Stream, error) {
 		closeCh: make(chan struct{}),
 	}
 	c.streams[id] = s
+
+	// Also create the stream in the stream.Manager so that
+	// received data for this stream can be properly tracked
+	if c.streamMgr != nil {
+		// Use Open to create a locally-initiated stream in the manager.
+		// This must use the same ID allocation, so we create it directly
+		// using New() and register it in the manager's map.
+		initialMaxData := c.config.MaxStreamData
+		s2 := stream.New(id, initialMaxData, c.config.MaxConnectionData)
+		// Register in the manager's internal map
+		// We access the manager's streams map via a helper
+		c.streamMgr.RegisterLocalStream(id, s2)
+	}
+
 	return s, nil
 }
 

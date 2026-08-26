@@ -18,11 +18,11 @@
 //	stream, err := conn.OpenStream()
 //	stream.Write(data)
 //
-// Since TLS 1.3 (RFC 9001) and loss detection (RFC 9002) are not implemented,
-// the SDK operates in plaintext mode — packets are not encrypted and there is
-// no retransmission. This is suitable for testing, learning, and environments
-// where the transport layer is already reliable (e.g., localhost or wired
-// connections with low loss).
+// The SDK uses the connection layer's PacketIO pipeline for packet
+// send/receive, FrameHandler for frame processing, and stream.Manager
+// for stream lifecycle management. In plaintext mode (default), packets
+// are not encrypted — suitable for testing and learning. In protected
+// mode, the full crypto/recovery/ack pipeline is used.
 package sdk
 
 import (
@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/Cabbage4/quic-go/connection"
+	"github.com/Cabbage4/quic-go/stream"
 	"github.com/Cabbage4/quic-go/transport"
 )
 
@@ -127,11 +128,13 @@ type Conn struct {
 
 	config *Config
 
-	// Stream manager
-	// We use the stream.Manager from the stream package
-
-	// ACK trackers per PN space
-	// ackTrackers [3]*ack.Tracker
+	// Connection-layer subsystems
+	packetIO   *connection.PacketIO
+	frameHandler *connection.FrameHandler
+	keyStore   *connection.KeySetStore
+	recovery   *connection.RecoveryManager
+	ackHandler  *connection.AckHandler
+	streamMgr  *stream.Manager
 
 	// Pending frames to send
 	sendQueue chan []byte
@@ -147,7 +150,7 @@ type Conn struct {
 	// Is this a server-side connection?
 	isServer bool
 
-	// Stream management
+	// Stream management (SDK-level wrappers)
 	streams        map[uint64]*Stream
 	streamsMu      netMutex
 	nextClientBidi  uint64

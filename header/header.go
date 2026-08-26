@@ -3,12 +3,17 @@
 // Packet formats:
 //   - Long Header Packets (Section 17.2): Initial, 0-RTT, Handshake, Retry, Version Negotiation
 //   - Short Header Packets (Section 17.3): 1-RTT
+//
+// This package also implements:
+//   - Spin Bit state management (Section 17.4)
+//   - Reserved Bits validation (Sections 17.2, 17.3)
 package header
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Cabbage4/quic-go/varint"
 )
@@ -137,6 +142,7 @@ func (h *LongHeader) Encode() ([]byte, error) {
 
 // DecodeLongHeader parses a long header from the given byte slice.
 // It returns the parsed header, the number of bytes consumed, and any error.
+// Returns an error if the reserved bits are non-zero (PROTOCOL_VIOLATION per §17.2).
 func DecodeLongHeader(data []byte) (*LongHeader, int, error) {
 	if len(data) < 1 {
 		return nil, 0, errors.New("header: data too short")
@@ -146,6 +152,15 @@ func DecodeLongHeader(data []byte) (*LongHeader, int, error) {
 	// Check header form bit (MSB)
 	if firstByte&0x80 == 0 {
 		return nil, 0, errors.New("header: not a long header (header form bit = 0)")
+	}
+	// Check fixed bit (must be 1)
+	if firstByte&0x40 == 0 {
+		return nil, 0, errors.New("header: invalid fixed bit (must be 1)")
+	}
+
+	// Validate reserved bits (bits 2-3, mask 0x0c) must be 0 (§17.2)
+	if firstByte&0x0c != 0 {
+		return nil, 0, errors.New("header: reserved bits non-zero in long header (PROTOCOL_VIOLATION)")
 	}
 
 	offset := 0
@@ -318,6 +333,7 @@ func (h *ShortHeader) Encode() ([]byte, error) {
 
 // DecodeShortHeader parses a short header from the given byte slice.
 // Note: DCID length must be known from connection context.
+// Returns an error if the reserved bits are non-zero (PROTOCOL_VIOLATION per §17.3).
 func DecodeShortHeader(data []byte, dcidLen int) (*ShortHeader, int, error) {
 	if len(data) < 1 {
 		return nil, 0, errors.New("header: data too short")
@@ -328,6 +344,11 @@ func DecodeShortHeader(data []byte, dcidLen int) (*ShortHeader, int, error) {
 	}
 	if firstByte&0x40 == 0 {
 		return nil, 0, errors.New("header: invalid fixed bit (must be 1)")
+	}
+
+	// Validate reserved bits (bits 3-4, mask 0x18) must be 0 (§17.3)
+	if firstByte&0x18 != 0 {
+		return nil, 0, errors.New("header: reserved bits non-zero in short header (PROTOCOL_VIOLATION)")
 	}
 
 	h := &ShortHeader{
@@ -455,4 +476,94 @@ func DecodeVersionNegotiation(data []byte) (*VersionNegotiation, int, error) {
 	}
 
 	return v, offset, nil
+}
+
+// === Spin Bit State Management (RFC 9000 §17.4) ===
+//
+// The spin bit is a single bit in the short header that allows passive
+// observers to measure latency. The endpoint maintains a "spin value" that
+// it toggles each time it observes the spin bit change on an incoming packet
+// from the peer. The outgoing spin bit is set to the current spin value.
+//
+// Spin bit algorithm (§17.4.4):
+//   1. On connection start: spin value = 0
+//   2. On receiving a packet with spin bit != current spin value:
+//      - Toggle the spin value (0→1 or 1→0)
+//   3. On sending a packet: set spin bit = current spin value
+
+// SpinBitManager tracks the spin bit state for a single connection.
+type SpinBitManager struct {
+	mu     sync.Mutex
+	spin   bool // current spin value to send
+	peer   bool // last observed peer spin value
+}
+
+// NewSpinBitManager creates a new spin bit manager initialized to 0.
+func NewSpinBitManager() *SpinBitManager {
+	return &SpinBitManager{}
+}
+
+// OnPacketReceived updates the spin state based on an incoming packet's spin bit.
+// Per §17.4.4: if the received spin bit differs from the current peer value,
+// toggle our spin value and update the peer value.
+func (s *SpinBitManager) OnPacketReceived(receivedSpinBit bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if receivedSpinBit != s.peer {
+		s.spin = !s.spin
+		s.peer = receivedSpinBit
+	}
+}
+
+// OnPacketSent returns the spin bit value to set on an outgoing packet.
+func (s *SpinBitManager) OnPacketSent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spin
+}
+
+// SpinValue returns the current spin value (for testing/inspection).
+func (s *SpinBitManager) SpinValue() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spin
+}
+
+// PeerValue returns the last observed peer spin value (for testing/inspection).
+func (s *SpinBitManager) PeerValue() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peer
+}
+
+// === Reserved Bits Validation (RFC 9000 §17.2, §17.3) ===
+//
+// Reserved bits in both long and short headers MUST be zero. An endpoint
+// that receives a packet with non-zero reserved bits MUST terminate the
+// connection with a PROTOCOL_VIOLATION error.
+//
+// The validation is performed in DecodeLongHeader and DecodeShortHeader
+// respectively. The following constants document the bit positions.
+
+const (
+	// LongHeaderReservedBitsMask is the mask for reserved bits in the long header first byte.
+	// Bits 2-3 (0-indexed from MSB): positions 0x0c
+	LongHeaderReservedBitsMask byte = 0x0c
+
+	// ShortHeaderReservedBitsMask is the mask for reserved bits in the short header first byte.
+	// Bits 3-4 (0-indexed from MSB): positions 0x18
+	ShortHeaderReservedBitsMask byte = 0x18
+)
+
+// ValidateReservedBitsLong checks if the reserved bits in a long header
+// first byte are all zero. Returns true if valid (all zero), false otherwise.
+func ValidateReservedBitsLong(firstByte byte) bool {
+	return firstByte&LongHeaderReservedBitsMask == 0
+}
+
+// ValidateReservedBitsShort checks if the reserved bits in a short header
+// first byte are all zero. Returns true if valid (all zero), false otherwise.
+func ValidateReservedBitsShort(firstByte byte) bool {
+	return firstByte&ShortHeaderReservedBitsMask == 0
 }

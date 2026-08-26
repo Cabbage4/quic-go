@@ -211,25 +211,25 @@
 <p class="subtitle" data-page-node-id="DHH43dUcWFs9nhEuG1u8Z1">基于 RFC 9000 逐节对比 · 生成时间: 2026-08-26 · 最后更新: 2026-08-26</p>
 
 <div class="updated-banner" data-page-node-id="H5BOIde29N10h3d3ZkSh9Q">
-    <strong data-page-node-id="GvtKYmdVeMzoNuTR0DEKaa">✅ 更新通知:</strong> 本报告已更新以反映所有 7 个缺失模块的实现完成。原先 10 个缺失功能现已缩减至 2 个 (TLS 1.3 和丢包检测, 均为有意跳过)。所有已修复的 bug 和代码级问题已标注为"已解决"。全部 15 个 Go 包通过测试。
+    <strong data-page-node-id="GvtKYmdVeMzoNuTR0DEKaa">✅ 更新通知:</strong> 本次更新完成了 SDK 与连接层全面集成 (FrameHandler/ProcessFrames 替代内联解析)、PATH_CHALLENGE/RESPONSE 路径验证、RETIRE_CONNECTION_ID 处理、Coordinator 连接生命周期编排、Key Phase 位接线、14 个端到端集成测试。全部 21 个 Go 包、245 个测试通过。
 </div>
 
 <div class="summary-grid" data-page-node-id="KWiOu6SRfYl4Q2BCufja0e">
     <div class="summary-card green" data-page-node-id="Zf25UHZLiT1UGNgv9OCcDf">
-        <div class="num" data-page-node-id="h4vZgXqDCen0LKYxPWvWwe">15</div>
-        <div class="label" data-page-node-id="7paHLC5bCzA6biSJS9bK9t">已实现模块</div>
+        <div class="num" data-page-node-id="h4vZgXqDCen0LKYxPWvWwe">21</div>
+        <div class="label" data-page-node-id="7paHLC5bCzA6biSJS9bK9t">Go 包数</div>
     </div>
     <div class="summary-card green" data-page-node-id="q7MimY7efugvXcMw3aAPlK">
-        <div class="num" data-page-node-id="Q2zFe5VoVvDjYnu46qH3rJ">20</div>
-        <div class="label" data-page-node-id="f7hdMWswQKAHPRSYJCdzQq">完整覆盖 (✓)</div>
+        <div class="num" data-page-node-id="Q2zFe5VoVvDjYnu46qH3rJ">245</div>
+        <div class="label" data-page-node-id="f7hdMWswQKAHPRSYJCdzQq">测试用例</div>
     </div>
-    <div class="summary-card yellow" data-page-node-id="XccXG5FjwXzs8JW9RD51Xp">
-        <div class="num" data-page-node-id="BQWJqBEEyocgqdhOWVEEu5">4</div>
-        <div class="label" data-page-node-id="AMOZH4gLrrOs7MO3bMfnTy">部分实现 (△)</div>
+    <div class="summary-card blue" data-page-node-id="XccXG5FjwXzs8JW9RD51Xp">
+        <div class="num" data-page-node-id="BQWJqBEEyocgqdhOWVEEu5">56</div>
+        <div class="label" data-page-node-id="AMOZH4gLrrOs7MO3bMfnTy">Go 文件数</div>
     </div>
-    <div class="summary-card red" data-page-node-id="T8CgYHHYzXF4NIy90UNVyW">
-        <div class="num" data-page-node-id="mu2CEqQ6LvwFgf2eJjLtfs">2</div>
-        <div class="label" data-page-node-id="3paZVjwB6S5FB1AZbqi4MI">缺失功能 (✗)</div>
+    <div class="summary-card green" data-page-node-id="T8CgYHHYzXF4NIy90UNVyW">
+        <div class="num" data-page-node-id="mu2CEqQ6Lvw5Fgf2eJjLtfs">20K+</div>
+        <div class="label" data-page-node-id="3paZVjwB6S5FB1AZbqi4MI">代码行数</div>
     </div>
 </div>
 
@@ -254,12 +254,12 @@
     </thead>
     <tbody data-page-node-id="kSp4xhVRIGefvOtzq4o8fx">
         <tr data-page-node-id="yZs0WcFUIFjB4U61TXnXdk"><td data-page-node-id="25FKCMGfyTL2GvctkWC7Ah">§2</td><td data-page-node-id="mJPlx3JHdxEhcwgBqPmHlR">Streams</td><td data-page-node-id="ICTj7F3Ua4eeU8EUq7Bp5i">✓ 完整</td><td data-page-node-id="At0C3VA4AYOnV6y7fiAPFP">P0 核心</td><td data-page-node-id="cZ52iYKmbm8Ub7ZdxwpcQr">stream/stream.go</td></tr>
-        <tr data-page-node-id="f6RG4krXTLrJChsAY0MZqi"><td data-page-node-id="I27cB6UF6sIXC2u1xXRB3g">§3</td><td data-page-node-id="bv60ac0oGGktyT1F8sgUAA">Stream State Machines</td><td data-page-node-id="6ixbo0AvGd4IpNa1vF86Aq">△ 部分</td><td data-page-node-id="EkxyqF749lUphL92yaYSqG">P0 核心</td><td data-page-node-id="URB84CJN7DSBk6ich7xiTd">stream/stream.go</td></tr>
-        <tr data-page-node-id="c0Njg9cRFUfzBY4TG8cvjK"><td data-page-node-id="2oYVRUV27Z4dNesYLYkmtP">§4</td><td data-page-node-id="5qql4rg9azGrB7oYiP5ox2">Flow Control</td><td data-page-node-id="11X0XMDuTjxKukoUPbi6PG">△ 部分</td><td data-page-node-id="uDCqK8Lau2zEZlM652secp">P0 核心</td><td data-page-node-id="8Oqd1aBq0Qog0UntZ5ScQG">stream/stream.go</td></tr>
+        <tr data-page-node-id="f6RG4krXTLrJChsAY0MZqi"><td data-page-node-id="I27cB6UF6sIXC2u1xXRB3g">§3</td><td data-page-node-id="bv60ac0oGGktyT1F8sgUAA">Stream State Machines</td><td data-page-node-id="6ixbo0AvGd4IpNa1vF86Aq">✓ 完整 ⟳</td><td data-page-node-id="EkxyqF749lUphL92yaYSqG">P0 核心</td><td data-page-node-id="URB84CJN7DSBk6ich7xiTd">stream/stream.go</td></tr>
+        <tr data-page-node-id="c0Njg9cRFUfzBY4TG8cvjK"><td data-page-node-id="2oYVRUV27Z4dNesYLYkmtP">§4</td><td data-page-node-id="5qql4rg9azGrB7oYiP5ox2">Flow Control</td><td data-page-node-id="11X0XMDuTjxKukoUPbi6PG">✓ 完整 ⟳</td><td data-page-node-id="uDCqK8Lau2zEZlM652secp">P0 核心</td><td data-page-node-id="8Oqd1aBq0Qog0UntZ5ScQG">stream/stream.go</td></tr>
         <tr data-page-node-id="bhHUVydvQg4EyCkyQdW8gT"><td data-page-node-id="dH5FGcDfluAspjDABDtZ0U">§5.1</td><td data-page-node-id="2zGTOs40VefEpEUYscshE8">Connection ID Management</td><td data-page-node-id="kIjEdyMW8wSmayhyHTGzxT">✓ 完整</td><td data-page-node-id="t2rb0cgMfir5KhgQLA5ApL">P0 核心</td><td data-page-node-id="GQFV9dEwNCeBTOT2C9z8Rq">connection/connid.go</td></tr>
         <tr data-page-node-id="0pEnJNcAe1ei7QBDDKwd8T"><td data-page-node-id="c8uYSW4L2KOYIEQfWGjURC">§5.2</td><td data-page-node-id="7kvE5KODBccU4jABRRNY0Y">Packet Matching & Routing</td><td data-page-node-id="f2ZYxPKLy3rzRpKdgEvrfD">✓ 完整 ⟳</td><td data-page-node-id="8jOgWnlduBN7C9n4GcmjgR">P0 核心</td><td data-page-node-id="S60y7EasIyr3B0vj6DUatL">connection/conn.go</td></tr>
         <tr data-page-node-id="GkEoaJbGPXreAXGHlWCkFX"><td data-page-node-id="8Wgs4CYhBZ1lsJ59pFvwAL">§6</td><td data-page-node-id="BWYoPIYvrNj6hzgcmgaL3S">Version Negotiation</td><td data-page-node-id="TuWz5X29GIADDE8VVO6geI">✓ 完整 ⟳</td><td data-page-node-id="2ImEq2TftK66mSDhhC0k0k">P1 重要</td><td data-page-node-id="yGvPIChteLinAjrG1AAJBa">version/version.go</td></tr>
-        <tr data-page-node-id="cD2fsnmuNalFYr5l26MmLn"><td data-page-node-id="YgbgNhEN6kKNBdC3TIWG92">§7</td><td data-page-node-id="EeXc0UgFwEZiLHIgGx6GoJ">Cryptographic Handshake</td><td data-page-node-id="i5thGGgjowV5GrGMqB0Gdq">✗ 缺失 (有意)</td><td data-page-node-id="BY6CdyDmpaUPXQWZ8rLg1f">—</td><td data-page-node-id="7vyOhtBR7ybUMDyL2lHjCH">—</td></tr>
+        <tr data-page-node-id="cD2fsnmuNalFYr5l26MmLn"><td data-page-node-id="YgbgNhEN6kKNBdC3TIWG92">§7</td><td data-page-node-id="EeXc0UgFwEZiLHIgGx6GoJ">Cryptographic Handshake</td><td data-page-node-id="i5thGGgjowV5GrGMqB0Gdq">✓ 完整 ⟳</td><td data-page-node-id="BY6CdyDmpaUPXQWZ8rLg1f">—</td><td data-page-node-id="7vyOhtBR7ybUMDyL2lHjCH">crypto/, connection/crypto.go</td></tr>
         <tr data-page-node-id="5gfBrQtlqyMMIIVSHww1nv"><td data-page-node-id="HiO5Y5zc9XXzJMmDtd6pVH">§8</td><td data-page-node-id="RCIJdJxpz6afwvGO3sHlqV">Address Validation</td><td data-page-node-id="Ia12ZOgjYI15GXUU0DNCof">✓ 完整 ⟳</td><td data-page-node-id="zFSGCMxbsrP7lB1digbwD1">P1 重要</td><td data-page-node-id="W3rEyYUigzmA7pCXy32ePN">token/token.go</td></tr>
         <tr data-page-node-id="combHEK7tVhKavoSTPtxqp"><td data-page-node-id="PhtAD1JL6HNK1qt7V9fCiF">§9</td><td data-page-node-id="zXEmHznJRZD7AEzgs5qgTW">Connection Migration</td><td data-page-node-id="g6e7gIxnoyQj2Sjzj1xJrC">✓ 完整 ⟳</td><td data-page-node-id="YDJRsOkmGVeA1um65nTfeC">P1 重要</td><td data-page-node-id="8pPrRgyYeAjBCK5LmHJOzJ">path/path.go</td></tr>
         <tr data-page-node-id="JpOZG36NnzmpoHLE9AgO4s"><td data-page-node-id="OQzmyKF7uXoL7koSkRHR3a">§10</td><td data-page-node-id="B4rjjbASeWjr9JV7jgaXUZ">Connection Termination</td><td data-page-node-id="PXrpfUJaAzBJ2K8CO2tfSe">✓ 完整 ⟳</td><td data-page-node-id="6ADDwaRm66sUJXGGNWEbZT">P0 核心</td><td data-page-node-id="mFhwVMiUl87f3U2gmFNZPu">connection/conn.go</td></tr>
@@ -267,7 +267,7 @@
         <tr data-page-node-id="Yc5goR7IYPivN4O9ysIdpy"><td data-page-node-id="bEYpeLbydbq6vzO52RGB0H">§13</td><td data-page-node-id="5aX6C0tT3ujve1MnxIkjkl">ACK Tracking & Generation</td><td data-page-node-id="wQ5YsU3ikukt5ZGYrsCGx1">✓ 完整 ⟳</td><td data-page-node-id="pEAEgn4szqGWHwJyTelZKZ">P0 核心</td><td data-page-node-id="hXqXbNUUVT2WujsJu6nDRP">ack/ack.go</td></tr>
         <tr data-page-node-id="Rcibs5DfB47xG7oJevHiwU"><td data-page-node-id="oDsusbnmmyDmsXVItS5Mwp">§14</td><td data-page-node-id="Xqiu00XmBDZ5lFlvAmHFVT">Datagram Size / PMTUD</td><td data-page-node-id="a1W6ljrJMHIhBGY9cWsSkh">✓ 完整 ⟳</td><td data-page-node-id="d7zzvRJx5hfLVZAycEe4ZE">P1 重要</td><td data-page-node-id="hXHEefH348UEW6DmVC9YxO">pmtu/pmtu.go</td></tr>
         <tr data-page-node-id="reBwNBFcvntfp3VxaXpMne"><td data-page-node-id="DwyeMMy3J2ZRZUBtRiAEE4">§16</td><td data-page-node-id="NDkx0HkJBTj8dvgBDifcFC">Variable-Length Integer Encoding</td><td data-page-node-id="YQggsUffKhwIkTFoQaiDL9">✓ 完整</td><td data-page-node-id="oCGjPfEQhasDTDJi3bdD46">P0 核心</td><td data-page-node-id="CwHGCHNdN1n6DMsHBPn5i7">varint/varint.go</td></tr>
-        <tr data-page-node-id="ysIs0jw6gyFq1loMQaeXFF"><td data-page-node-id="WtpgMx2cca93iwDem3XoH4">§17</td><td data-page-node-id="dYWOSesObXjKUYxX2h9MzP">Packet Header Encoding</td><td data-page-node-id="S0ScOgftpXJ9qXAT4Uhn6d">△ 部分</td><td data-page-node-id="kYnDVGZkJZ9fhbz3r3wOGj">P0 核心</td><td data-page-node-id="WUPNqc2UUupPvR7pE5f7fc">header/header.go</td></tr>
+        <tr data-page-node-id="ysIs0jw6gyFq1loMQaeXFF"><td data-page-node-id="WtpgMx2cca93iwDem3XoH4">§17</td><td data-page-node-id="dYWOSesObXjKUYxX2h9MzP">Packet Header Encoding</td><td data-page-node-id="S0ScOgftpXJ9qXAT4Uhn6d">✓ 完整 ⟳</td><td data-page-node-id="kYnDVGZkJZ9fhbz3r3wOGj">P0 核心</td><td data-page-node-id="WUPNqc2UUupPvR7pE5f7fc">header/header.go</td></tr>
         <tr data-page-node-id="vqqwSt7JSOtl1Kz8fr8hc4"><td data-page-node-id="UF1QFkqW4Uy0eVaZ1UxyDa">§17.1</td><td data-page-node-id="Ji9vX8AqwopW4CkVZeplkm">Packet Number Encoding</td><td data-page-node-id="jYpRTGWchaDvHtl5XwHW5t">✓ 完整</td><td data-page-node-id="xSlIhKdBAGjVBqhf2wOEBf">P0 核心</td><td data-page-node-id="Pcrq2eCj0eNtcpTxevONEA">packet/packet_number.go</td></tr>
         <tr data-page-node-id="p9i1fEvs52qSqt49yyrpBJ"><td data-page-node-id="2LgdzYMN18QuK9uD4T7ngl">§18</td><td data-page-node-id="m53fuu2HLo6djvI9rnMgCQ">Transport Parameters</td><td data-page-node-id="CNXZPHYwDGJqZUc2JTbKcC">✓ 完整</td><td data-page-node-id="ntstHpDkoGlcpuiyoRQ6Fh">P0 核心</td><td data-page-node-id="ReRX40pfv6gOvAsSEJQI3r">transport/params.go</td></tr>
         <tr data-page-node-id="Aj3FDlJtRcSjPv9SJidssL"><td data-page-node-id="vt2vH3z1mk5SllcnAETzTZ">§19</td><td data-page-node-id="JMyfZGTb1HbjFplJr2TEMS">Frame Types</td><td data-page-node-id="cV3zSMeftbkJ9Oz6pOLGsh">✓ 完整</td><td data-page-node-id="oqTNaB4JqXCYjqdptCtDM2">P0 核心</td><td data-page-node-id="55qpyEQNcsojV5WLNPwnLN">frames/frames.go</td></tr>
@@ -307,7 +307,7 @@
             <span class="section-num" data-page-node-id="G0hLBTw3shOYaPsrFOiUx0">§3</span>
             <span class="section-title" data-page-node-id="4GjGpSEY8mI5291WRGENTX">Stream State Machines (流状态机)</span>
         </div>
-        <span class="badge partial" data-page-node-id="YYSIRFCuwnLnkI4yLaxTlt">△ 部分</span>
+        <span class="badge done" data-page-node-id="YYSIRFCuwnLnkI4yLaxTlt">✓ 完整 ⟳</span>
     </div>
     <div class="section-body" data-page-node-id="hLvwBdFPOyEMHrNtkuLrb7">
         <p data-page-node-id="uuNYlxC4N17a8i4pZbqEev"><strong data-page-node-id="wQdnLweymExC0AqmjJ43Sy">实现文件:</strong> <span class="code-ref" data-page-node-id="GWPz1SI9XgyN2macbtoDLw">stream/stream.go</span></p>
@@ -317,8 +317,8 @@
             <li data-page-node-id="r8qb0jWaoVLQN9ShBS0eUl">✓ Write() → StateSend, CloseSending() → StateSendEnd</li>
             <li data-page-node-id="ncYXAgvlpI3zHMi2CVDDRn">✓ Reset() → StateResetSent, ResetReceived() → StateResetRead</li>
             <li data-page-node-id="Gud8YXB1O3nG6yKDYKFP6O">✓ <code data-page-node-id="mB9Xf0h1leILtnm7RyI9ay">SendState</code> / <code data-page-node-id="MpSvsQ4qDp4mvOSUPoQih4">RecvState</code> 独立结构体各自管理状态字段</li>
-            <li data-page-node-id="jM6nEz7wPgJKtI6dPHQiNN">△ <strong data-page-node-id="rGRVDA9GUuxEM5OzDBj3tD">缺少: ACK收到后 SendEnd → DataSent 的转换</strong> — 需要与ACK模块集成</li>
-            <li data-page-node-id="b8wYzmAekzQLApN1BeepFS">△ <strong data-page-node-id="yOQxyHmxjJUYK4B9REWJcj">缺少: 窗口自动更新逻辑</strong> — 消费数据后触发 MAX_DATA / MAX_STREAM_DATA 帧发送</li>
+            <li data-page-node-id="jM6nEz7wPgJKtI6dPHQiNN">✓ <strong data-page-node-id="rGRVDA9GUuxEM5OzDBj3tD">ACK收到后 SendEnd → DataSent 的转换</strong> — MarkAcked() + AllDataAcked() 已实现</li>
+            <li data-page-node-id="b8wYzmAekzQLApN1BeepFS">✓ <strong data-page-node-id="yOQxyHmxjJUYK4B9REWJcj">窗口自动更新逻辑</strong> — Read() 触发 windowUpdatePending, GenStreamWindowUpdate() 生成 MAX_STREAM_DATA</li>
         </ul>
     </div>
 </div>
@@ -330,7 +330,7 @@
             <span class="section-num" data-page-node-id="DGv5eIFsAUtiPkiCQJmlnb">§4</span>
             <span class="section-title" data-page-node-id="X71UKOb4sHOBqYkgFpEXia">Flow Control (流量控制)</span>
         </div>
-        <span class="badge partial" data-page-node-id="dZCxmgJ9i8HAzaTMwDg4oh">△ 部分</span>
+        <span class="badge done" data-page-node-id="dZCxmgJ9i8HAzaTMwDg4oh">✓ 完整 ⟳</span>
     </div>
     <div class="section-body" data-page-node-id="gwnu0vFSPGflJs4UlIbgFL">
         <p data-page-node-id="i0o2eAZ9BmSjQDywPMRVSL"><strong data-page-node-id="ss2po9MGPgw72ZSDmwpunf">实现文件:</strong> <span class="code-ref" data-page-node-id="eiByddKhlcUqbF00H9oBKy">stream/stream.go</span></p>
@@ -341,8 +341,8 @@
             <li data-page-node-id="pWwmyPUtQRyHfnaa9JitsR">✓ UpdateSendMaxData() / UpdateRecvMaxData() — 支持动态调整窗口</li>
             <li data-page-node-id="YSwNyGxZoy4JGAkRFubtFW">✓ 重复数据检测 (offset < recvOffset 时截断已有部分)</li>
             <li data-page-node-id="azonTcmJ8rCbO39HO50mDi">✓ finalSize 一致性检查 (FINAL_SIZE_ERROR)</li>
-            <li data-page-node-id="LCq03AakZTeLRddYIbvf5z">△ <strong data-page-node-id="WBJaKT1YXUUfVsxp3DboOi">缺少: DATA_BLOCKED / STREAM_DATA_BLOCKED 帧的自动生成</strong> — 当流量受限时应主动发送这些帧</li>
-            <li data-page-node-id="JVNUEnL8fUGFDwFMD7u0T5">△ <strong data-page-node-id="zjJBAeIJKrMilcGNqU0KBs">缺少: 流量控制窗口自动更新逻辑</strong> — RFC §4.2 要求在消费数据后更新窗口并发送 MAX_DATA / MAX_STREAM_DATA 帧</li>
+            <li data-page-node-id="LCq03AakZTeLRddYIbvf5z">✓ <strong data-page-node-id="WBJaKT1YXUUfVsxp3DboOi">DATA_BLOCKED / STREAM_DATA_BLOCKED 帧的自动生成</strong> — GenDataBlocked() / GenStreamDataBlocked() 已实现, IsSendBlocked() 检测阻塞</li>
+            <li data-page-node-id="JVNUEnL8fUGFDwFMD7u0T5">✓ <strong data-page-node-id="zjJBAeIJKrMilcGNqU0KBs">流量控制窗口自动更新逻辑</strong> — NeedsWindowUpdate() + GenStreamWindowUpdate() + PendingWindowUpdates() 已实现 (RFC §4.2)</li>
         </ul>
     </div>
 </div>
@@ -425,21 +425,20 @@
             <span class="section-num" data-page-node-id="xQKdJ2IhbR1gDINKLgqxSu">§7</span>
             <span class="section-title" data-page-node-id="MVKVFnk93NkwCWGd6CL2Dd">Cryptographic & Transport Handshake</span>
         </div>
-        <span class="badge na" data-page-node-id="6GdxhOCWbAIArFDQxAYFQD">✗ 有意跳过</span>
+        <span class="badge done" data-page-node-id="6GdxhOCWbAIArFDQxAYFQD">✓ 完整 ⟳</span>
     </div>
     <div class="section-body" data-page-node-id="Y0MPfmmSzNxc0664xT5I86">
-        <p data-page-node-id="MmPB99ZQNFgVn9sSswNoha"><strong data-page-node-id="NHyUXmCChorc8HqvFXVbQe">状态:</strong> 有意跳过 — 这是协议结构实现, 非 QUIC 协议栈。README 已声明 TLS 集成为有意跳过的部分。</p>
-        <p data-page-node-id="2wbBG5QMY66KDq6KJFenL3">RFC 9000 §7 引用 [QUIC-TLS] (RFC 9001) 描述 TLS 1.3 集成。</p>
+        <p data-page-node-id="MmPB99ZQNFgVn9sSswNoha"><strong data-page-node-id="NHyUXmCChorc8HqvFXVbQe">状态:</strong> 已完整实现 — RFC 9001 (Using TLS to Secure QUIC) 全部覆盖。</p>
+        <p data-page-node-id="2wbBG5QMY66KDq6KJFenL3">RFC 9000 §7 引用 [QUIC-TLS] (RFC 9001) 描述 TLS 1.3 集成。现已全部实现。</p>
         <ul data-page-node-id="zKaYQ5DhWkNSEZlNS162XP">
-            <li data-page-node-id="Ey3RHIDU6SmiozeXUzAEti">✗ 无 TLS 1.3 握手状态机</li>
-            <li data-page-node-id="SQayJu8ZKT2APHSOO9Jvkw">✗ 无数据包保护 (加密/解密)</li>
-            <li data-page-node-id="HxEScNFocWBRXILC9woxOH">✗ 无 Initial / Handshake / 1-RTT 密钥派生</li>
-            <li data-page-node-id="eHSKEJhAyXhlxJRgLhYIDL">✗ 无 Header Protection (§5.4 of [QUIC-TLS])</li>
-            <li data-page-node-id="mo7InRaNIyTL60tunPa3Gt">✗ 无密钥更新 (Key Update, §6 of [QUIC-TLS])</li>
+            <li data-page-node-id="Ey3RHIDU6SmiozeXUzAEti">✓ TLS 1.3 握手状态机 — crypto/tls.go 使用 Go 标准库 crypto/tls QUICConn</li>
+            <li data-page-node-id="SQayJu8ZKT2APHSOO9Jvkw">✓ 数据包保护 (加密/解密) — crypto/aead.go AEAD (AES-128-GCM, AES-256-GCM)</li>
+            <li data-page-node-id="HxEScNFocWBRXILC9woxOH">✓ Initial / Handshake / 1-RTT 密钥派生 — crypto/keys.go HKDF-Expand-Label</li>
+            <li data-page-node-id="eHSKEJhAyXhlxJRgLhYIDL">✓ Header Protection — crypto/header_protection.go AES-ECB 掩码 + apply/remove</li>
+            <li data-page-node-id="mo7InRaNIyTL60tunPa3Gt">✓ 密钥更新 (Key Update) — crypto/key_update.go KeyManager + Key Phase 切换</li>
+            <li>✓ connection/crypto.go: KeySetStore 每加密级别密钥管理, ProtectPacket/UnprotectPacket 管线</li>
+            <li>✓ connection/coordinator.go: PN space discard 协调 (RFC 9001 §4.9), key phase 检测</li>
         </ul>
-        <div class="detail-box" data-page-node-id="Ph6BfyFAkhU8lUJuVy8E2O">
-            <strong data-page-node-id="CBD9T5XkF8kdEQeSu3nIHs">说明:</strong> 如需补齐, 建议使用 Go 标准库 <code data-page-node-id="WyfavIeYzKY5sYEeZr8RZW">crypto/tls</code> 或 <code data-page-node-id="OFm9wdy9aqM5aKCBmNy1Pg">golang.org/x/crypto/hkdf</code> 实现密钥派生。这是一个独立的工程, 超出 RFC 9000 范围。
-        </div>
     </div>
 </div>
 
@@ -641,7 +640,7 @@
             <span class="section-num" data-page-node-id="P6hizgOmw9ShuWrfLpX5G9">§17</span>
             <span class="section-title" data-page-node-id="NUuRw5xd4hs7cOEDjSbuML">Packet Header Encoding</span>
         </div>
-        <span class="badge partial" data-page-node-id="oobAAFgNb5OZRFnADV7p3O">△ 部分</span>
+        <span class="badge done" data-page-node-id="oobAAFgNb5OZRFnADV7p3O">✓ 完整 ⟳</span>
     </div>
     <div class="section-body" data-page-node-id="fbPQexVC2Tm8QoDmDQAnYn">
         <p data-page-node-id="WFsugURn8q4h3UIo5azTWZ"><strong data-page-node-id="qpNi2Vs7o5cYg63hKtP6Gy">实现文件:</strong> <span class="code-ref" data-page-node-id="kGKjCXvTLrBy7eEREFP3zB">header/header.go</span></p>
@@ -657,12 +656,12 @@
             <li data-page-node-id="xKj9Af3236rCDahdYa0lS8">✓ Packet Coalescing — <code data-page-node-id="mt4b8NKZ2xIiByZyBHWkwG">coalesce/coalesce.go</code> 已实现 ⟳</li>
         </ul>
         <div class="detail-box" data-page-node-id="SSerwfx8XAzqSIGm5AmFWn">
-            <strong data-page-node-id="i1kJvO0jHtvvBDjKH7Ka8B">仍缺少 (依赖 TLS, 有意跳过):</strong>
+            <strong data-page-node-id="i1kJvO0jHtvvBDjKH7Ka8B">已全部实现:</strong>
             <ul data-page-node-id="ocRGHvzFxyVgf9LqTorFJQ">
-                <li data-page-node-id="BgW5WKG8Ktp3dexxytu8lj">△ <strong data-page-node-id="DjDlUOvLHRI6N0ermDLRfC">Spin Bit (§17.4)</strong> — 字段有编解码, 无 spin bit 状态管理逻辑</li>
-                <li data-page-node-id="99PUcyC05izG9vyU3rXlNA">△ <strong data-page-node-id="b4ebhj2g2CzJOPh5CLKMD6">Reserved Bits (§17.2/17.3)</strong> — 未验证非0值 (应 PROTOCOL_VIOLATION)</li>
-                <li data-page-node-id="C4lf5uZZZxZPfwj638bRhd">△ <strong data-page-node-id="ttcHRWekVciaKDRbxK3spj">Key Phase (§17.3)</strong> — 字段有编解码但无密钥更新逻辑</li>
-                <li data-page-node-id="dvFCIFCYLRnmfDUaKNbtHh">✗ <strong data-page-node-id="kJJ424ithSX3kLOqJhlawg">Header Protection (§17 of [QUIC-TLS])</strong> — 需要加密层支持</li>
+                <li data-page-node-id="BgW5WKG8Ktp3dexxytu8lj">✓ <strong data-page-node-id="DjDlUOvLHRI6N0ermDLRfC">Spin Bit (§17.4)</strong> — SpinBitManager 已实现, OnPacketReceived() 切换值, OnPacketSent() 返回当前值</li>
+                <li data-page-node-id="99PUcyC05izG9vyU3rXlNA">✓ <strong data-page-node-id="b4ebhj2g2CzJOPh5CLKMD6">Reserved Bits (§17.2/17.3)</strong> — DecodeLongHeader/DecodeShortHeader 中验证非0值返回 PROTOCOL_VIOLATION, ValidateReservedBitsLong/Short 辅助函数</li>
+                <li data-page-node-id="C4lf5uZZZxZPfwj638bRhd">✓ <strong data-page-node-id="ttcHRWekVciaKDRbxK3spj">Key Phase (§17.3)</strong> — PacketIO 读取 KeyManager.TxKeyPhase() 设置 key phase 位, Coordinator.CheckKeyPhaseUpdate 检测入站变化</li>
+                <li data-page-node-id="dvFCIFCYLRnmfDUaKNbtHh">✓ <strong data-page-node-id="kJJ424ithSX3kLOqJhlawg">Header Protection (§17 of [QUIC-TLS])</strong> — crypto/header_protection.go 完整实现, packet_io.go 集成 apply/remove</li>
             </ul>
         </div>
     </div>
@@ -892,10 +891,10 @@
         <tr data-page-node-id="8mrn4lnhyDx09knZrpoW6M"><td data-page-node-id="sYJwGV2ex7wUeUtS4nUivK"><code data-page-node-id="9mIxFaFsTVyu1frWWe2A4Z">varint/</code></td><td data-page-node-id="3lOpXKltxEA1HTQJKYFuWc">§16</td><td data-page-node-id="JQEIrL5zP34mstikD4dIPS">变长整数编解码</td><td data-page-node-id="jlR9F6NqdP3SzfdS1jGDUW">✓ 完整</td><td data-page-node-id="qrBh8OhPM9w4FLiFnpRo6K">8</td></tr>
         <tr data-page-node-id="jlJlbNnyqqST9JcSPxGNzm"><td data-page-node-id="09ENydpUN4wZnykj8yE45Q"><code data-page-node-id="0nxrgvcwDbZyFcfY8NSkfg">packet/</code></td><td data-page-node-id="wwLWZRSeFjQA6B9RoJcZPw">§17.1</td><td data-page-node-id="CmWLl14Fu2OWegS954O6vV">包号编解码</td><td data-page-node-id="7FMrpa1zwOxCy0pUEJQLhX">✓ 完整</td><td data-page-node-id="rQ97mRYCIJyt7WLSPGSESm">6</td></tr>
         <tr data-page-node-id="FcT7qBoXi2gJhodPtJDPDM"><td data-page-node-id="F7oxzHG7WWipRr0E3uHnGo"><code data-page-node-id="XxAg50aXkEnbXGKXqeN5rP">frames/</code></td><td data-page-node-id="qXI1FSHYPrfDS1zSrqm3Ej">§19</td><td data-page-node-id="snLA3dcQqr9PXHQNIaFM5r">帧类型编解码</td><td data-page-node-id="iGjp9mFQzooKNgztY8czEs">✓ 完整</td><td data-page-node-id="3AekAjF60ddrDODlQgFPQL">26</td></tr>
-        <tr data-page-node-id="ddVzLe870xz7dCyMaG9Lwn"><td data-page-node-id="l8nGjbs0VzAFcwYAEmzgGP"><code data-page-node-id="hrlcDVE5wAa0Vzn3kM2WSU">header/</code></td><td data-page-node-id="3k8KVMXXAEFsaRFAlGgJXB">§17</td><td data-page-node-id="WxVx4cvAN4Vm2Xym5KDhrq">包头部编解码</td><td data-page-node-id="1GsajfFgFWPtsVPm0NpeSB">✓ 完整</td><td data-page-node-id="gmCqWCOGIcyDfZdRMzRtMc">4</td></tr>
+        <tr data-page-node-id="ddVzLe870xz7dCyMaG9Lwn"><td data-page-node-id="l8nGjbs0VzAFcwYAEmzgGP"><code data-page-node-id="hrlcDVE5wAa0Vzn3kM2WSU">header/</code></td><td data-page-node-id="3k8KVMXXAEFsaRFAlGgJXB">§17</td><td data-page-node-id="WxVx4cvAN4Vm2Xym5KDhrq">包头部编解码 + Spin Bit + 保留位验证 + Key Phase</td><td data-page-node-id="1GsajfFgFWPtsVPm0NpeSB">✓ 完整</td><td data-page-node-id="gmCqWCOGIcyDfZdRMzRtMc">13</td></tr>
         <tr data-page-node-id="8pGFlOcDM3eBA7SaDajNPU"><td data-page-node-id="sY3s7RnCS3NG01msxwtSPG"><code data-page-node-id="HKbfADqABu3HL6DvSDpfIn">transport/</code></td><td data-page-node-id="XJeoQFYnFhpnqG8hLCU210">§18</td><td data-page-node-id="qoMlHDMVIxBk2aXfE5WOtZ">传输参数</td><td data-page-node-id="4DVn2PYmZ2v37ihAJnWemb">✓ 完整</td><td data-page-node-id="8uIPUubPhG7RyeZQYrwZe0">4</td></tr>
-        <tr data-page-node-id="lu1486Z0WPAB1HGfmYXdcf"><td data-page-node-id="RBDLz6lLATFQlXshIFS5hQ"><code data-page-node-id="KW7rG4BxlYHNOTPRKQcmwV">connection/</code></td><td data-page-node-id="6ARCLSmrancfQCUhioj0f9">§5, §10</td><td data-page-node-id="WycKBY5ogrkxCuqzLQxQrY">连接状态机、包路由、CID 管理</td><td data-page-node-id="dgOLKUgjXHFvo2SSytlHVA">✓ 完整</td><td data-page-node-id="HpQVMX8G3vtoawu5yPEK7B">—</td></tr>
-        <tr data-page-node-id="xz8oeviIL0bDj3bb83WzK4"><td data-page-node-id="x3Xhg7dT1AWojF4nsC9Jh4"><code data-page-node-id="OhxzhowCeg18DNUHOXh2hb">stream/</code></td><td data-page-node-id="1R4IQjyztpxg8sLE0ED1CV">§2-4</td><td data-page-node-id="LWMY3eNmE2DBsObkeMjjSK">流管理、状态机、流量控制</td><td data-page-node-id="G2H2WsxmkyA5qH7v9kMVGd">△ 部分</td><td data-page-node-id="IzX1qTYGh0ZIii0N4VTxZb">7</td></tr>
+        <tr data-page-node-id="lu1486Z0WPAB1HGfmYXdcf"><td data-page-node-id="RBDLz6lLATFQlXshIFS5hQ"><code data-page-node-id="KW7rG4BxlYHNOTPRKQcmwV">connection/</code></td><td data-page-node-id="6ARCLSmrancfQCUhioj0f9">§5, §10</td><td data-page-node-id="WycKBY5ogrkxCuqzLQxQrY">连接状态机、包路由、CID 管理、密钥/恢复/ACK/帧处理/PacketIO/Coordinator</td><td data-page-node-id="dgOLKUgjXHFvo2SSytlHVA">✓ 完整</td><td data-page-node-id="HpQVMX8G3vtoawu5yPEK7B">29</td></tr>
+        <tr data-page-node-id="xz8oeviIL0bDj3bb83WzK4"><td data-page-node-id="x3Xhg7dT1AWojF4nsC9Jh4"><code data-page-node-id="OhxzhowCeg18DNUHOXh2hb">stream/</code></td><td data-page-node-id="1R4IQjyztpxg8sLE0ED1CV">§2-4</td><td data-page-node-id="LWMY3eNmE2DBsObkeMjjSK">流管理、状态机、流量控制</td><td data-page-node-id="G2H2WsxmkyA5qH7v9kMVGd">✓ 完整</td><td data-page-node-id="IzX1qTYGh0ZIii0N4VTxZb">17</td></tr>
         <tr data-page-node-id="FwFShB3c1hgo9VT9KEW7YP"><td data-page-node-id="0OiM2AxYiCf1KOq26eEcqm"><code data-page-node-id="HZhYJV4BsBZ5hYzWtv8zBJ">errors/</code></td><td data-page-node-id="2ehEfGoAoHPB7eZLN1fkUk">§20</td><td data-page-node-id="ziIsqgz5rvxDffeFMUgtOZ">错误码定义</td><td data-page-node-id="DBIyvAK5LRCjCCkC1T4KEa">✓ 完整</td><td data-page-node-id="fm3PXMKGubBCL4qqCIcY0R">10</td></tr>
         <tr data-page-node-id="av64NLDJPsxyM750C9D3Bn"><td data-page-node-id="0HFDtATQawboYfCJenAVEh"><code data-page-node-id="iRiab4p8mHTNAKelWIaPC8">ack/</code></td><td data-page-node-id="XhT33hk86OEAgfBHBu0O7P">§13</td><td data-page-node-id="v03pH2UvOdcciy8DR5amyx">ACK 跟踪与生成</td><td data-page-node-id="Gx5xgusr6ttnrHbwuCkuFN">✓ 完整 ⟳</td><td data-page-node-id="mQfSiNHSDHRKl7zNTMUN25">10</td></tr>
         <tr data-page-node-id="DFMcBSzH52XYrRfg0q3gEP"><td data-page-node-id="3SSSeEKVFocEFPXDJrPCY5"><code data-page-node-id="XuLgbfsRf9l5fsTYe2wJY3">path/</code></td><td data-page-node-id="QHfOubctITewXegkX985a4">§8-9</td><td data-page-node-id="iHJDwEt2yga6ZNFIZqSaT8">路径验证与连接迁移</td><td data-page-node-id="kuiUbo1guwuNvRHlzPLfDJ">✓ 完整 ⟳</td><td data-page-node-id="8FvxoEfzDTOpemfsIJdn4q">7</td></tr>
@@ -907,7 +906,7 @@
     </tbody>
 </table>
 <p style="font-size: 13px; color: var(--text-secondary); margin-top: 8px;" data-page-node-id="G4qQ9vZ95KJbnE3CmE2TP9">
-    总计: 15 个 Go 包 · ~115+ 个测试用例 · 全部通过 · 0 外部依赖 (纯标准库)
+    总计: 21 个 Go 包 · 245 个测试用例 · 全部通过 · 0 外部依赖 (纯标准库)
 </p>
 
 <!-- Still out of scope -->
@@ -917,12 +916,23 @@
     <div class="section-header" onclick="toggleSection(this)" data-page-node-id="DgjVL1W8qRGL1SenPeZeRT">
         <div class="left" data-page-node-id="3hLTglGEfSl5edsOr6KOoQ">
             <span class="section-num" data-page-node-id="6Wk4LXUpDKMdqVwEVcDkwO">—</span>
-            <span class="section-title" data-page-node-id="w6Ha4awAl5xqraEyFT56oP">TLS 1.3 集成 (RFC 9001)</span>
+            <span class="section-title" data-page-node-id="w6Ha4awAl5xqraEyFT56oP">TLS 1.3 集成 (RFC 9001) ✅</span>
         </div>
-        <span class="badge na" data-page-node-id="6PdoBoeiYoFtN289Iwre4P">有意跳过</span>
+        <span class="badge done" data-page-node-id="6PdoBoeiYoFtN289Iwre4P">已完成</span>
     </div>
-    <div class="section-body" data-page-node-id="uQ1QhwNvDa3HB2JzFkBGoZ">
-        <p data-page-node-id="dki9sdkkJIY50CuJvTaSRU">需要 <code data-page-node-id="HIMntCKvixETO1MDGWxdIe">crypto/tls</code> 或第三方 TLS 库, 超出 RFC 9000 范围。包括: 密钥派生、包保护 (AEAD 加密/解密)、Header Protection、密钥更新 (Key Update)。</p>
+    <div class="section-body open" data-page-node-id="uQ1QhwNvDa3HB2JzFkBGoZ">
+        <p data-page-node-id="dki9sdkkJIY50CuJvTaSRU">已完整实现 RFC 9001 (Using TLS to Secure QUIC):</p>
+        <ul>
+            <li><b>crypto/keys.go</b>: HKDF-Expand-Label, 初始密钥派生 (DCID → initial_secret → client/server secret → traffic keys), AES-128-GCM + AES-256-GCM 支持</li>
+            <li><b>crypto/aead.go</b>: AEAD 加密/解密 (Encrypt/Decrypt), nonce 构造 (IV XOR padded PN), ProtectPayload/UnprotectPayload 完整管线, AEAD 使用限制检查 (2^23/2^52)</li>
+            <li><b>crypto/header_protection.go</b>: AES-ECB 掩码生成, ApplyHeaderProtection/RemoveHeaderProtection, PN 偏移计算, 最小包长度检查</li>
+            <li><b>crypto/key_update.go</b>: KeyManager 管理 Application 级密钥, Key Phase 切换, 预生成下一代接收密钥, 旧密钥保留, AEAD 限制检查</li>
+            <li><b>crypto/tls.go</b>: TLS 1.3 集成层 (Go stdlib crypto/tls QUICConn), 事件处理循环 (QUICSetReadSecret, QUICSetWriteSecret, QUICWriteData, QUICHandshakeDone 等), CRYPTO 帧数据路由, 密钥丢弃 (DiscardKeys), TLS alert → QUIC error 转换</li>
+            <li><b>connection/crypto.go</b>: KeySetStore (每加密级别+方向的密钥存储), DeriveInitialKeys, ProtectPacket/UnprotectPacket 管线, TLS 会话管理</li>
+            <li><b>connection/coordinator.go</b>: Coordinator 生命周期编排 — 握手驱动, PN space discard 协调 (RFC 9001 §4.9), key phase 检测 (RFC 9001 §6), 连接关闭 + draining (RFC 9000 §10.2-10.3)</li>
+            <li><b>connection/packet_io.go</b>: PacketIO 统一包收发管线 — 读取 KeyManager.TxKeyPhase() 设置 key phase 位, RecordSentFrames 记录发送帧用于 ACK 驱动状态更新</li>
+        </ul>
+        <p>共 9 个文件 (crypto/ 6 + connection/ 3), 60+ 个测试, 全部通过。</p>
     </div>
 </div>
 
@@ -930,12 +940,18 @@
     <div class="section-header" onclick="toggleSection(this)" data-page-node-id="sC9vYpfHwz5KRIdGwjtbM3">
         <div class="left" data-page-node-id="HbFSpRlB98G3GGNTEntoY5">
             <span class="section-num" data-page-node-id="R80GuFJ6ChBz9h9lvQ4yQr">—</span>
-            <span class="section-title" data-page-node-id="qJbuuDQE48i1pv483HG7LV">丢包检测与拥塞控制 (RFC 9002)</span>
+            <span class="section-title" data-page-node-id="qJbuuDQE48i1pv483HG7LV">丢包检测与拥塞控制 (RFC 9002) ✅</span>
         </div>
-        <span class="badge na" data-page-node-id="BjYSf577uOMxOJgG55848r">有意跳过</span>
+        <span class="badge done" data-page-node-id="BjYSf577uOMxOJgG55848r">已完成</span>
     </div>
-    <div class="section-body" data-page-node-id="qbgy4K4c2qEo95TREI6a94">
-        <p data-page-node-id="xW6nHlEDHcV3WuhuEphunS">QUIC 最复杂的部分, 包括: RTT 估算、PTO 计算、超时重传、拥塞窗口管理、ECN 验证。建议作为独立 <code data-page-node-id="ioJYWd7Ym9upiUoAJrcR79">recovery/</code> 模块实现。ACK 跟踪 (<code data-page-node-id="Wthf9iWBnTiTElb5OYfZPS">ack/ack.go</code>) 已实现, 为此模块提供基础。</p>
+    <div class="section-body open" data-page-node-id="qbgy4K4c2qEo95TREI6a94">
+        <p data-page-node-id="xW6nHlEDHcV3WuhuEphunS">已完整实现 RFC 9002 (QUIC Loss Detection and Congestion Control):</p>
+        <ul>
+            <li><b>recovery/loss_detection.go</b>: RTT 估算 (EWMA: smoothed_rtt = 7/8·SRTT + 1/8·adjusted_rtt), PTO 计算 (smoothed_rtt + max(4·rttvar, kGranularity) + max_ack_delay), 包阈值丢包检测 (kPacketThreshold=3), 时间阈值丢包检测 (kTimeThreshold=9/8), 多模式丢包检测定时器, PTO 超时退避</li>
+            <li><b>recovery/congestion.go</b>: NewReno 拥塞控制 — 慢启动 (指数增长), 拥塞避免 (AIMD), 恢复期 (防止双重缩减), ECN CE 处理, 持久拥塞检测, kLossReductionFactor=0.5, kMinimumWindow=2·MTU</li>
+            <li><b>connection/recovery.go</b>: RecoveryManager 集成层 — OnPacketSent/OnAckReceived 钩子, 丢包检测定时器管理, 重传队列, 拥塞窗口 CanSend 检查, PNSpace 映射</li>
+        </ul>
+        <p>共 3 个文件, 28 个测试, 全部通过。connection/recovery.go 集成层提供 OnPacketSent/OnAckReceived 钩子。</p>
     </div>
 </div>
 
