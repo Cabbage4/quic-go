@@ -88,6 +88,47 @@ config := &sdk.Config{
 }
 ```
 
+## HTTP SDK Usage
+
+The `http/` package provides an HTTP/1.1-over-QUIC implementation with a familiar `net/http`-style API:
+
+### Server
+
+```go
+mux := http.NewServeMux()
+mux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+    w.Write([]byte("Hello, World!"))
+})
+mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+    w.Write(r.Body) // echo POST body back
+})
+
+srv := &http.Server{Handler: mux}
+ln, err := http.Listen("udp", "127.0.0.1:8443", srv, nil)
+if err != nil {
+    log.Fatal(err)
+}
+defer ln.Close()
+```
+
+### Client
+
+```go
+// Simple GET
+resp, err := http.Get("http://127.0.0.1:8443/hello")
+fmt.Println(resp.StatusCode, string(resp.Body))
+
+// POST with body and headers
+resp, err = http.Post("http://127.0.0.1:8443/echo", []byte("ping"), nil)
+fmt.Println(string(resp.Body))
+
+// Custom client with timeout
+client := &http.Client{Timeout: 5 * time.Second}
+resp, err = client.Do("GET", "http://127.0.0.1:8443/hello", nil, nil)
+```
+
+Each HTTP request-response pair is carried over a single bidirectional QUIC stream. This is plain HTTP/1.1 text framing over QUIC, not HTTP/3 (no QPACK, no dedicated unidirectional streams).
+
 ## Project Structure
 
 ```
@@ -111,9 +152,13 @@ quic-go/
 │   ├── config.go     # Config, Listener, Conn, Stream types
 │   ├── sdk.go        # Implementation
 │   └── sdk_test.go   # Tests
+├── http/             # HTTP/1.1-over-QUIC SDK
+│   ├── http.go       # Server, Client, Handler, ServeMux, Request/Response
+│   └── http_test.go  # Tests
 ├── cmd/
 │   ├── demo/         # Protocol-level interactive demo
-│   └── echo/         # SDK echo server/client example
+│   ├── echo/         # SDK echo server/client example
+│   └── http-demo/    # HTTP-over-QUIC server/client example
 └── README.md
 ```
 
@@ -127,7 +172,13 @@ cd quic-go && go test ./...
 cd quic-go && go run ./cmd/echo -server -addr 127.0.0.1:4433
 
 # Run the SDK echo demo (terminal 2 — client)
-cd quic-go && go run ./cmd/echo -client -addr 127.0.0.1:4433 -msg "Hello QUIC!"
+cd quic-go && go run ./cmd/echo -addr 127.0.0.1:4433 -msg "Hello QUIC!"
+
+# Run the HTTP demo (terminal 1 — server)
+cd quic-go && go run ./cmd/http-demo -server -addr 127.0.0.1:8443
+
+# Run the HTTP demo (terminal 2 — client)
+cd quic-go && go run ./cmd/http-demo -addr 127.0.0.1:8443
 
 # Run the protocol demo
 cd quic-go && go run ./cmd/demo
