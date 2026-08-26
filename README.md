@@ -468,35 +468,41 @@ cd quic-go && go run ./cmd/demo
 
 ## Performance
 
-This is a from-scratch, learning-oriented implementation — no performance optimization has been done. The numbers below are a baseline, not a target. All measurements are on loopback (`127.0.0.1`), so they reflect pure stack overhead with no network RTT.
+This is a from-scratch, learning-oriented implementation. The numbers below were taken on loopback (`127.0.0.1`), so they reflect pure stack overhead with no network RTT. After fixing the dominant O(N²) (closed streams never retired from the per-connection stream map, so the per-packet delivery loop ranged over a set that grew with the request count), request-rate throughput is now linear in N.
 
 ### Methodology
 
 - **Request rate**: single QUIC connection, serial (one in-flight request at a time) GET requests with tiny (~tens of bytes) payloads, plaintext path (`TLSMode: false`), run via the `http3-go` companion demo (which depends on this `quic-go` SDK): `go run ./cmd/demo -server -addr 127.0.0.1:PORT` and `go run ./cmd/demo -addr 127.0.0.1:PORT -n N`.
 - **Bulk transfer**: 8 MiB echoed back over a single bidirectional stream via `cmd/echo`.
 
-### Results — request rate (single connection, loopback)
+### Results — request rate (single connection, loopback, after optimization)
 
 | Requests (N) | Total time | Throughput | Latency / request |
 |---:|---:|---:|---:|
-| 300  | 0.97 s | ~310 req/s | 3.2 ms |
-| 500  | 2.40 s | ~208 req/s | 4.8 ms |
-| 1000 | 9.60 s | ~104 req/s | 9.6 ms |
+| 300   | 0.105 s | ~2,860 req/s | 0.35 ms |
+| 1,000 | 0.304 s | ~3,290 req/s | 0.30 ms |
+| 3,000 | 0.946 s | ~3,170 req/s | 0.32 ms |
+| 10,000 | 3.132 s | ~3,190 req/s | 0.31 ms |
 
-### Findings
+Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scalability restored. At N=1,000 this is a **~26× improvement** over the pre-optimization baseline (8.0 s → 0.30 s), and N=10,000 now completes in ~3 s (previously N=1,000 alone took 8 s).
 
-- **Per-request latency grows linearly with N** (3.2 → 9.6 ms as N goes 300 → 1000): a scalability issue. The main contributor is that cumulative ACK ranges grow with the number of packets sent, and each incoming ACK re-materializes and iterates the full acknowledged-packet set (an O(N) pass per ACK, capped at 2^20 entries to bound memory). The sent-frame tracking map also grows with N.
-- **Bulk transfer (8 MiB echo) deadlocks** — neither write-all-then-read nor concurrent-read completes within 15 s. This exposes flow-control / write-blocking problems under large transfers, consistent with the known gap that the connection-level flow-control window is not propagated correctly in all paths.
-- **ACK frequency is effectively 1**: one ACK packet is sent per ack-eliciting received packet (no ACK coalescing or delayed ACK), so each request costs roughly ~10 packets on the wire.
+### What was optimized
+
+1. **Stream retirement (the dominant fix).** `Conn.deliverReceivedStreamData` runs on every received packet and ranged over `c.streams` (plus `Manager.AllStreams()`); `Manager.CloseStream` existed but had **zero callers**, so every closed stream stayed in those maps for the connection's lifetime → an O(N²) per-packet scan. Fully-closed streams (`eofSent && writeClosed`) are now retired from both `c.streams` and the stream `Manager` in that loop.
+2. **ACK delta de-duplication.** ACK frames are cumulative, so each ACK re-described the full acknowledged set and the receiver re-materialized/re-scanned it every time — an O(N) pass per ACK, O(N²) over the run. `AckHandler.NewlyAckedFromFrame` now emits only the *newly*-acked packet numbers (using a per-space high-water mark to skip the already-reported prefix), so both the sent-frame tracker and loss detection do O(delta) work per ACK. (This was a smaller contributor than #1 for the request-rate workload, but is correct and bounded.)
+
+### Remaining limitations
+
+- **Bulk transfer (8 MiB echo) still deadlocks.** `Stream.Write` blocks when the flow-control window is exhausted and the window does not grow — the connection-level flow-control window is not propagated/refreshed on the send path under sustained large transfers. This is the next item to fix (see "Takeaway" #1).
+- **ACK frequency is effectively 1**: one ACK packet per ack-eliciting received packet (no coalescing or delayed ACK); each request still costs roughly ~10 packets on the wire.
 - NewReno-style congestion control, no pacing.
 
 ### Takeaway
 
-Throughput is orders of magnitude below a production stack (the reference [quic-go](https://github.com/quic-go/quic-go) reaches multi-Gbit/s and tens of thousands of req/s). That is expected for an unoptimized, single-file-per-concern learning implementation. The highest-leverage improvements, in priority order:
+Throughput is still well below a production stack (the reference [quic-go](https://github.com/quic-go/quic-go) reaches multi-Gbit/s and tens of thousands of req/s), which is expected for a single-file-per-concern learning implementation. The highest-leverage remaining improvements, in priority order:
 
-1. **ACK coalescing / delayed ACK** — collapse ~10 packets/request to ~2-3.
-2. **Fix connection-level flow-control window growth** so bulk transfers no longer deadlock.
-3. **Lazy ACK-range iteration** in `ParseAckFrame` (iterate ranges instead of materializing a slice), eliminating the O(N)-per-ACK cost.
-4. Pacing and a more modern congestion controller (e.g. BBR).
+1. **Fix connection-level flow-control window growth** on the send path so bulk transfers no longer deadlock.
+2. **ACK coalescing / delayed ACK** — collapse ~10 packets/request to ~2-3.
+3. Pacing and a more modern congestion controller (e.g. BBR).
 
 For a production QUIC implementation in Go, see [quic-go](https://github.com/quic-go/quic-go).
