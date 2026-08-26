@@ -1,5 +1,7 @@
 # QUIC Transport Protocol - Go Implementation (RFC 9000, RFC 9001, RFC 9002)
 
+**[English](README.md)** | **[中文](README.zh-CN.md)**
+
 A Go implementation of the core QUIC transport protocol as specified in [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000) (Transport), [RFC 9001](https://www.rfc-editor.org/rfc/rfc9001) (Using TLS to Secure QUIC), and [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002) (Loss Detection and Congestion Control), including a high-level SDK for building servers and clients.
 
 ## Overview
@@ -463,7 +465,5 @@ cd quic-go && go run ./cmd/demo
 - Connection Layer Integration: Complete — crypto, recovery, ACK, frame handler, packet I/O, coordinator, e2e tests
 - SDK Integration: Complete — SDK uses connection-layer PacketIO/FrameHandler/stream.Manager pipeline with Coordinator lifecycle management
 - **SDK TLS Mode: Complete — `Config.TLSMode=true` enables full TLS 1.3 + AEAD packet protection**. See the [TLS Quick Start](#tls-quick-start) section above and `cmd/tls-demo/` for a runnable demo.
-
-See `GAP_ANALYSIS.html` for a detailed RFC compliance audit (note: that report is a pre-generated snapshot and predates recent ACK / packet-number / flow-control fixes; treat it as historical, not current).
 
 For a production QUIC implementation in Go, see [quic-go](https://github.com/quic-go/quic-go).
