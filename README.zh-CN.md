@@ -1,10 +1,20 @@
-# QUIC 传输协议 - Go 实现（RFC 9000、RFC 9001、RFC 9002）
+# 🚀 QUIC 传输协议 - Go 实现
+
+> RFC 9000 · RFC 9001 · RFC 9002 — 纯 Go 从零实现的 QUIC，面向学习与教学。
 
 **[English](README.md)** | **[中文](README.zh-CN.md)**
 
-本项目按 [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000)（传输）、[RFC 9001](https://www.rfc-editor.org/rfc/rfc9001)（用 TLS 保护 QUIC）、[RFC 9002](https://www.rfc-editor.org/rfc/rfc9002)（丢包检测与拥塞控制）规范，用 Go 实现了 QUIC 传输协议的核心，并提供一套用于构建服务端与客户端的高层 SDK。
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)
+![RFC 9000](https://img.shields.io/badge/RFC%209000-Transport-blue)
+![RFC 9001](https://img.shields.io/badge/RFC%209001-TLS-blue)
+![RFC 9002](https://img.shields.io/badge/RFC%209002-Loss%20%26%20CC-blue)
+![Dependencies](https://img.shields.io/badge/dependencies-0%20(stdlib%20only)-success)
+![License](https://img.shields.io/badge/license-MIT-orange)
 
-## 概览
+本项目按 [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000)（传输）、[RFC 9001](https://www.rfc-editor.org/rfc/rfc9001)（用 TLS 保护 QUIC）、[RFC 9002](https://www.rfc-editor.org/rfc/rfc9002)（丢包检测与拥塞控制）规范，用 Go 实现了 QUIC 传输协议的核心，并提供一套用于构建服务端与客户端的高层 `quic` 包。
+
+## 📋 概览
 
 本项目实现了 QUIC 传输协议的基础构建模块，包括：
 
@@ -33,11 +43,11 @@
 
 > HTTP/3 实现在独立的配套模块（`http3-go`）中，不在本仓内。HTTP/3 + QPACK 的 API 与 `cmd/demo` 请参见该模块的 README。
 
-## SDK 用法
+## 🛠️ API 用法
 
 根目录 `quic` 包提供了一套仿照 Go 标准库 `net` 包设计的高层 API：
 
-### 服务端
+### 🖥️ 服务端
 
 ```go
 listener, err := quic.Listen("udp", "127.0.0.1:4433", nil)
@@ -66,7 +76,7 @@ func handleConn(conn *quic.Conn) {
 }
 ```
 
-### 客户端
+### 📡 客户端
 
 ```go
 conn, err := quic.Dial("udp", "127.0.0.1:4433", nil)
@@ -86,7 +96,7 @@ n, _ := stream.Read(buf)
 fmt.Println(string(buf[:n]))
 ```
 
-### 配置
+### ⚙️ 配置
 
 ```go
 config := &quic.Config{
@@ -99,16 +109,16 @@ config := &quic.Config{
 }
 ```
 
-## TLS 快速上手
+## 🔐 TLS 快速上手
 
 SDK 通过 `Config.TLSMode` 支持完整的 TLS 1.3 加密（RFC 9001）。本节涵盖从运行内置 demo 到自写 TLS 服务端/客户端的全部内容。
 
-### 环境要求
+### ✅ 环境要求
 
 - Go 1.26+（使用 `crypto/tls` 的 QUICConn API）
 - 无外部依赖（仅 Go 标准库）
 
-### 运行 Demo
+### ▶️ 运行 Demo
 
 项目内置了一个 TLS echo demo（`cmd/tls-demo/`），自动在内存中生成自签名证书并完成 TLS 握手：
 
@@ -138,7 +148,7 @@ client received: "echo: hello over QUIC+TLS"
 Demo complete!
 ```
 
-### TLS 模式 API 概览
+### 📖 TLS 模式 API 概览
 
 SDK 的 API 与 Go 标准 `net` 包一致——只需在 `Config` 中设置 `TLSMode: true` 即可启用 TLS：
 
@@ -172,7 +182,7 @@ config := &quic.Config{
 | `ServerName` | `string` | 不需要 | 可选 | 客户端 SNI（应匹配证书主机名） |
 | `InsecureSkipVerify` | `bool` | 不需要 | 可选 | 跳过证书验证（仅测试用） |
 
-### 服务端用法
+### 🖥️ 服务端用法
 
 ```go
 package main
@@ -240,7 +250,7 @@ func handleStream(stream *quic.Stream) {
 }
 ```
 
-### 客户端用法
+### 📡 客户端用法
 
 ```go
 package main
@@ -284,7 +294,7 @@ func main() {
 }
 ```
 
-### 明文模式（调试用）
+### 🔓 明文模式（调试用）
 
 将 `TLSMode` 设为 `false`（或不设置）即使用明文模式，数据包不加密——适用于协议学习和调试：
 
@@ -302,7 +312,7 @@ listener, _ := quic.Listen("udp", "127.0.0.1:8443", config)
 conn, _ := quic.Dial("udp", "127.0.0.1:8443", config)
 ```
 
-### TLS 模式 vs 明文模式
+### 🔄 TLS 模式 vs 明文模式
 
 | 特性 | 明文模式（`TLSMode: false`） | TLS 模式（`TLSMode: true`） |
 |------|-----|-----|
@@ -314,14 +324,36 @@ conn, _ := quic.Dial("udp", "127.0.0.1:8443", config)
 | 密钥更新 | 不支持 | 支持（RFC 9001 §6 Key Update） |
 | 适用场景 | 开发调试、协议学习 | 生产环境、安全通信 |
 
-### 架构说明
+## 🏗️ 架构说明
 
 TLS 模式下数据流经以下管道：
+
+```mermaid
+graph TD
+    A["🖥️ 应用层数据"] --> B["quic.Conn / quic.Stream"]
+    B -->|"PacketIO.SendPacket()"| C["Connection 层"]
+    C --> D["帧编码<br/>frames.Encode"]
+    C --> E["构建包头<br/>LongHeader / ShortHeader"]
+    C --> F["🔒 AEAD 加密<br/>crypto.ProtectPayload"]
+    C --> G["🔒 头部保护<br/>ApplyHeaderProtection"]
+    C --> H["可选：包合并<br/>CoalescePackets"]
+    D & E & F & G & H --> I["📡 UDP 发送"]
+    I --> J["UDP 数据包"]
+
+    style A fill:#e1f5fe,stroke:#0288d1
+    style C fill:#fff3e0,stroke:#f57c00
+    style F fill:#fce4ec,stroke:#c62828
+    style G fill:#fce4ec,stroke:#c62828
+    style I fill:#e8f5e9,stroke:#388e3c
+```
+
+<details>
+<summary>📄 文字版</summary>
 
 ```
 应用层数据
     ↓
-SDK (quic.Conn / quic.Stream)
+quic.Conn / quic.Stream
     ↓ 调用 PacketIO.SendPacket()
 Connection 层
     ├── 帧编码 (frames.Encode)
@@ -333,6 +365,8 @@ Connection 层
     ↓
 UDP 数据包
 ```
+
+</details>
 
 握手流程：
 
@@ -365,7 +399,7 @@ UDP 数据包
 - **`connection.Coordinator`** —— 生命周期协调器：驱动 TLS 握手、PN 空间丢弃、密钥更新。
 - **`connection.FrameHandler`** —— 帧分发器；将 CRYPTO 帧路由到 `KeyStore.FeedCryptoData()`。
 
-## 项目结构
+## 📁 项目结构
 
 ```
 quic-go/
@@ -416,7 +450,7 @@ quic-go/
 └── README.md
 ```
 
-## 运行
+## ▶️ 运行
 
 ```bash
 # 运行全部测试
@@ -438,7 +472,7 @@ cd quic-go && go run ./cmd/tls-demo -addr 127.0.0.1:8443
 cd quic-go && go run ./cmd/demo
 ```
 
-## 关键设计决策
+## 🎯 关键设计决策
 
 1. **纯 Go** —— 无外部依赖（仅标准库）。
 2. **RFC 9000 附录 A 伪代码** —— 包号编解码算法直接实现附录 A.2 与 A.3 的伪代码。
@@ -455,27 +489,39 @@ cd quic-go && go run ./cmd/demo
    - `coordinator.go`：中央生命周期协调器 —— 握手驱动、PN 空间丢弃协调（RFC 9001 §4.9）、Key Phase 管理（RFC 9001 §6）、带排空的连接关闭（RFC 9000 §10.2-10.3）
    - `e2e_test.go`：覆盖完整连接生命周期的端到端集成测试
 
-## 状态
+## 📊 状态
 
-- **54 个 Go 文件、219 个测试函数，全部通过**
-- **17 个包，零外部依赖（仅 Go 标准库）**
-- RFC 9000（传输）：完成
-- RFC 9001（TLS 集成）：完成 —— 密钥派生、AEAD、头部保护、密钥更新、经 crypto/tls QUICConn 的 TLS 握手
-- RFC 9002（丢包检测与拥塞控制）：完成 —— RTT 估计、PTO、丢包检测、NewReno 拥塞控制
-- Connection 层集成：完成 —— crypto、recovery、ACK、frame handler、packet I/O、coordinator、e2e 测试
-- SDK 集成：完成 —— SDK 复用 connection 层 PacketIO/FrameHandler/stream.Manager 管道，由 Coordinator 管理生命周期
-- **SDK TLS 模式：完成 —— `Config.TLSMode=true` 启用完整 TLS 1.3 + AEAD 包保护**。见上文 [TLS 快速上手](#tls-快速上手) 节及 `cmd/tls-demo/` 可运行示例。
+| 指标 | 值 |
+|---|---|
+| Go 文件 | 54 |
+| 测试函数 | 219 ✅ |
+| 包 | 17 |
+| 外部依赖 | 0（仅标准库） |
 
-## 性能
+| 组件 | 状态 |
+|---|---|
+| RFC 9000（传输） | ![Complete](https://img.shields.io/badge/完成-green) |
+| RFC 9001（TLS 集成） | ![Complete](https://img.shields.io/badge/完成-green) |
+| RFC 9002（丢包检测与拥塞控制） | ![Complete](https://img.shields.io/badge/完成-green) |
+| Connection 层集成 | ![Complete](https://img.shields.io/badge/完成-green) |
+| `quic` 包 API | ![Complete](https://img.shields.io/badge/完成-green) |
+| TLS 模式（`Config.TLSMode=true`） | ![Complete](https://img.shields.io/badge/完成-green) |
+
+- RFC 9001：密钥派生、AEAD、头部保护、密钥更新、经 crypto/tls QUICConn 的 TLS 握手
+- RFC 9002：RTT 估计、PTO、丢包检测、NewReno 拥塞控制
+- Connection 层：crypto、recovery、ACK、frame handler、packet I/O、coordinator、e2e 测试
+- **TLS 模式：`Config.TLSMode=true` 启用完整 TLS 1.3 + AEAD 包保护**。见 [TLS 快速上手](#-tls-快速上手) 及 `cmd/tls-demo/`。
+
+## ⚡ 性能
 
 本仓是从零开始、面向学习与教学的实现。下列数据均在回环（`127.0.0.1`）上取得，反映的是纯协议栈开销、不含网络 RTT。在修复了主要的 O(N²)（已关闭的流从不从连接级流 map 退役，导致每个收包的投递循环都要遍历一个随请求数增长的集合）之后，请求速率吞吐已随 N 线性扩展。
 
-### 方法
+### 📐 方法
 
 - **请求速率**：单 QUIC 连接、串行（同一时刻只有一个在途请求）GET 请求、极小负载（约几十字节）、明文路径（`TLSMode: false`），经 `http3-go` 配套 demo（依赖本 `quic-go` SDK）运行：`go run ./cmd/demo -server -addr 127.0.0.1:端口` 与 `go run ./cmd/demo -addr 127.0.0.1:端口 -n N`。
 - **大块传输**：经 `cmd/echo` 在一条双向流上回显 8 MiB。
 
-### 结果 —— 请求速率（单连接、回环、优化后）
+### 📈 结果 —— 请求速率（单连接、回环、优化后）
 
 | 请求数 N | 总耗时 | 吞吐 | 每请求延迟 |
 |---:|---:|---:|---:|
@@ -486,19 +532,19 @@ cd quic-go && go run ./cmd/demo
 
 每请求延迟现已与 N 无关、约恒定（~0.31 ms）——线性可扩展性已恢复。N=1,000 处相比优化前基线提升约 **26×**（8.0 s → 0.30 s），且 N=10,000 现在约 3 s 完成（此前单 N=1,000 就要 8 s）。
 
-### 做了哪些优化
+### 🔧 做了哪些优化
 
 1. **流退役（主修复）**。`Conn.deliverReceivedStreamData` 每个收包都执行，遍历 `c.streams`（以及 `Manager.AllStreams()`）；而 `Manager.CloseStream` 虽存在但**零调用者**，每个已关闭的流都永久留在这些 map 里 → 每包 O(N²) 扫描。现已在该循环中把完全关闭的流（`eofSent && writeClosed`）从 `c.streams` 与 stream `Manager` 两处一并退役。
 2. **ACK 增量去重**。ACK 帧是累计的，每个 ACK 都重新描述全部已确认集合，接收方每次都重新物化/扫描 → 每个 ACK 一次 O(N)、全程 O(N²)。`AckHandler.NewlyAckedFromFrame` 现在只返回**新**确认的包号（用每空间高水位跳过已上报前缀），使已发帧跟踪与丢包检测每个 ACK 只做 O(增量) 工作。（对请求速率负载而言，此项贡献小于 #1，但正确且有界。）
 3. **`Stream.Write` 分片**。`Stream.Write` 此前把整个 buffer 作为单个 STREAM 帧塞进一个包；8 MiB 写入会产生一个超限 UDP 数据报、被内核静默丢弃（大块传输毫无进展）。`Write` 现已分片为 ≤1100 字节的 STREAM 帧、各自成包，发送侧得以完成。（大块 *回显* 整轮 8 MiB 仍会在传完前卡住——见"仍存在的限制"。）
 
-### 仍存在的限制
+### ⚠️ 仍存在的限制
 
 - **大块传输不稳定（flaky）。** `Stream.Write` 分片（见"做了哪些优化"#3）修复了发送侧：现能完成（8 MiB 约 52ms 入队）且回显数据有流动。成功时，4 MiB 回显整轮约 130ms（~60 MiB/s / ~500 Mbit/s）、1 MiB 约 60ms（~33 MiB/s）——相比之前的"永不完成"是重大变化。但**不稳定**：约 ⅔ 的运行会卡住（15s 内无进展），与传输大小、服务端是否全新无关。卡顿是高包率下接收/投递路径的每连接竞态，根因尚未定位（卡顿时两端均非 CPU 瓶颈，`sample` 显示双方均空闲/阻塞）。8 MiB 比 1–4 MiB 更易卡。（请求速率负载用的是极小 payload，不受影响。）
 - **ACK 频率实际为 1**：每收一个 ack-eliciting 包就单独回一个 ACK 包（无合并、无延迟 ACK）；每个请求在链路上仍约 ~10 个包。
 - 类 NewReno 拥塞控制，无 pacing。
 
-### 结论
+### 🎓 结论
 
 吞吐仍远低于生产级栈（参考 [quic-go](https://github.com/quic-go/quic-go) 可达多 Gbit/s、数万 req/s），对一个单文件单职责的学习实现属预期。按优先级，剩余提升空间最大的是：
 

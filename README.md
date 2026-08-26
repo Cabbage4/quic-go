@@ -1,15 +1,25 @@
-# QUIC Transport Protocol - Go Implementation (RFC 9000, RFC 9001, RFC 9002)
+# 🚀 QUIC Transport Protocol - Go Implementation
+
+> RFC 9000 · RFC 9001 · RFC 9002 — a from-scratch, learning-oriented QUIC in pure Go.
 
 **[English](README.md)** | **[中文](README.zh-CN.md)**
 
-A Go implementation of the core QUIC transport protocol as specified in [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000) (Transport), [RFC 9001](https://www.rfc-editor.org/rfc/rfc9001) (Using TLS to Secure QUIC), and [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002) (Loss Detection and Congestion Control), including a high-level SDK for building servers and clients.
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)
+![RFC 9000](https://img.shields.io/badge/RFC%209000-Transport-blue)
+![RFC 9001](https://img.shields.io/badge/RFC%209001-TLS-blue)
+![RFC 9002](https://img.shields.io/badge/RFC%209002-Loss%20%26%20CC-blue)
+![Dependencies](https://img.shields.io/badge/dependencies-0%20(stdlib%20only)-success)
+![License](https://img.shields.io/badge/license-MIT-orange)
 
-## Overview
+A Go implementation of the core QUIC transport protocol as specified in [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000) (Transport), [RFC 9001](https://www.rfc-editor.org/rfc/rfc9001) (Using TLS to Secure QUIC), and [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002) (Loss Detection and Congestion Control), including a high-level `quic` package for building servers and clients.
+
+## 📋 Overview
 
 This project implements the fundamental building blocks of the QUIC transport protocol, including:
 
-- **Variable-Length Integer Encoding** (Section 16) — QUIC's custom varint format (6/14/30/62-bit)
-- **Packet Number Encoding/Decoding** (Section 17.1) — Truncated packet number encoding with Appendix A pseudocode
+- **🔢 Variable-Length Integer Encoding** (Section 16) — QUIC's custom varint format (6/14/30/62-bit)
+- **📦 Packet Number Encoding/Decoding** (Section 17.1) — Truncated packet number encoding with Appendix A pseudocode
 - **Frame Types** (Section 19) — All frame types defined in RFC 9000 §19 (0x00–0x1e): PADDING, PING, ACK (with ECN variant), RESET_STREAM, STOP_SENDING, CRYPTO, NEW_TOKEN, STREAM (0x08–0x0f), MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS (bidi/uni), DATA_BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED (bidi/uni), NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, PATH_CHALLENGE, PATH_RESPONSE, CONNECTION_CLOSE (transport/application), HANDSHAKE_DONE
 - **Packet Headers** (Section 17) — Long headers (Initial, 0-RTT, Handshake, Retry), short headers (1-RTT), and Version Negotiation
 - **Transport Parameters** (Section 18) — Full encoding/decoding of all 17 transport parameters
@@ -33,11 +43,11 @@ This project implements the fundamental building blocks of the QUIC transport pr
 
 > HTTP/3 is implemented in a separate companion module (`http3-go`), not in this repo. See that module's README for the HTTP/3 + QPACK API and `cmd/demo`.
 
-## SDK Usage
+## 🛠️ API Usage
 
 The root `quic` package provides a high-level API inspired by Go's `net` package:
 
-### Server
+### 🖥️ Server
 
 ```go
 listener, err := quic.Listen("udp", "127.0.0.1:4433", nil)
@@ -66,7 +76,7 @@ func handleConn(conn *quic.Conn) {
 }
 ```
 
-### Client
+### 📡 Client
 
 ```go
 conn, err := quic.Dial("udp", "127.0.0.1:4433", nil)
@@ -86,7 +96,7 @@ n, _ := stream.Read(buf)
 fmt.Println(string(buf[:n]))
 ```
 
-### Config
+### ⚙️ Config
 
 ```go
 config := &quic.Config{
@@ -99,16 +109,16 @@ config := &quic.Config{
 }
 ```
 
-## TLS Quick Start
+## 🔐 TLS Quick Start
 
 The SDK supports full TLS 1.3 encryption (RFC 9001) via `Config.TLSMode`. This section covers everything from running the built-in demo to writing your own TLS server and client.
 
-### Requirements
+### ✅ Requirements
 
 - Go 1.26+ (uses the `crypto/tls` QUICConn API)
 - No external dependencies (Go standard library only)
 
-### Run the Demo
+### ▶️ Run the Demo
 
 The project ships a TLS echo demo (`cmd/tls-demo/`) that generates a self-signed certificate in memory and completes the TLS handshake:
 
@@ -138,7 +148,7 @@ client received: "echo: hello over QUIC+TLS"
 Demo complete!
 ```
 
-### TLS Mode API Overview
+### 📖 TLS Mode API Overview
 
 The SDK API mirrors Go's standard `net` package — set `TLSMode: true` in `Config` to enable TLS:
 
@@ -172,7 +182,7 @@ config := &quic.Config{
 | `ServerName` | `string` | not needed | optional | Client SNI (should match cert hostname) |
 | `InsecureSkipVerify` | `bool` | not needed | optional | Skip cert verification (test only) |
 
-### Server Usage
+### 🖥️ Server Usage
 
 ```go
 package main
@@ -240,7 +250,7 @@ func handleStream(stream *quic.Stream) {
 }
 ```
 
-### Client Usage
+### 📡 Client Usage
 
 ```go
 package main
@@ -284,7 +294,7 @@ func main() {
 }
 ```
 
-### Plaintext Mode (for Debugging)
+### 🔓 Plaintext Mode (for Debugging)
 
 Set `TLSMode` to `false` (or leave it unset) to use plaintext mode, where packets are not encrypted — useful for protocol learning and debugging:
 
@@ -302,7 +312,7 @@ listener, _ := quic.Listen("udp", "127.0.0.1:8443", config)
 conn, _ := quic.Dial("udp", "127.0.0.1:8443", config)
 ```
 
-### TLS Mode vs Plaintext Mode
+### 🔄 TLS vs Plaintext
 
 | Feature | Plaintext (`TLSMode: false`) | TLS (`TLSMode: true`) |
 |------|-----|-----|
@@ -314,14 +324,36 @@ conn, _ := quic.Dial("udp", "127.0.0.1:8443", config)
 | Key update | Not supported | Supported (RFC 9001 §6 Key Update) |
 | Use case | Dev/debug, protocol learning | Production, secure communication |
 
-### Architecture
+## 🏗️ Architecture
 
 In TLS mode, data flows through this pipeline:
+
+```mermaid
+graph TD
+    A["🖥️ Application data"] --> B["quic.Conn / quic.Stream"]
+    B -->|"PacketIO.SendPacket()"| C["Connection layer"]
+    C --> D["Frame encoding<br/>frames.Encode"]
+    C --> E["Header build<br/>LongHeader / ShortHeader"]
+    C --> F["🔒 AEAD encrypt<br/>crypto.ProtectPayload"]
+    C --> G["🔒 Header protection<br/>ApplyHeaderProtection"]
+    C --> H["Optional: coalescing<br/>CoalescePackets"]
+    D & E & F & G & H --> I["📡 UDP send"]
+    I --> J["UDP datagrams"]
+
+    style A fill:#e1f5fe,stroke:#0288d1
+    style C fill:#fff3e0,stroke:#f57c00
+    style F fill:#fce4ec,stroke:#c62828
+    style G fill:#fce4ec,stroke:#c62828
+    style I fill:#e8f5e9,stroke:#388e3c
+```
+
+<details>
+<summary>📄 Text version</summary>
 
 ```
 Application data
     ↓
-SDK (quic.Conn / quic.Stream)
+quic.Conn / quic.Stream
     ↓ calls PacketIO.SendPacket()
 Connection layer
     ├── Frame encoding (frames.Encode)
@@ -333,6 +365,8 @@ Connection layer
     ↓
 UDP datagrams
 ```
+
+</details>
 
 Handshake flow:
 
@@ -365,7 +399,7 @@ Key components:
 - **`connection.Coordinator`** — lifecycle orchestrator: drives TLS handshake, PN-space discard, key update.
 - **`connection.FrameHandler`** — frame dispatcher; routes CRYPTO frames to `KeyStore.FeedCryptoData()`.
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 quic-go/
@@ -416,7 +450,7 @@ config.go     # Config, Listener, Conn, Stream types (root)
 └── README.md
 ```
 
-## Running
+## ▶️ Running
 
 ```bash
 # Run all tests
@@ -438,7 +472,7 @@ cd quic-go && go run ./cmd/tls-demo -addr 127.0.0.1:8443
 cd quic-go && go run ./cmd/demo
 ```
 
-## Key Design Decisions
+## 🎯 Key Design Decisions
 
 1. **Pure Go** — No external dependencies (standard library only).
 2. **RFC 9000 Appendix A pseudocode** — The packet number encode/decode algorithms directly implement the pseudocode from Appendix A.2 and A.3.
@@ -455,27 +489,39 @@ cd quic-go && go run ./cmd/demo
    - `coordinator.go`: Central lifecycle orchestrator — handshake driver, PN space discard coordination (RFC 9001 §4.9), key phase management (RFC 9001 §6), connection close with draining (RFC 9000 §10.2-10.3)
    - `e2e_test.go`: End-to-end integration tests covering the full connection lifecycle
 
-## Status
+## 📊 Status
 
-- **54 Go files, 219 test functions, all passing**
-- **17 packages, zero external dependencies (Go standard library only)**
-- RFC 9000 (Transport): Complete
-- RFC 9001 (TLS Integration): Complete — key derivation, AEAD, header protection, key update, TLS handshake via crypto/tls QUICConn
-- RFC 9002 (Loss Detection & Congestion Control): Complete — RTT estimation, PTO, loss detection, NewReno congestion control
-- Connection Layer Integration: Complete — crypto, recovery, ACK, frame handler, packet I/O, coordinator, e2e tests
-- SDK Integration: Complete — SDK uses connection-layer PacketIO/FrameHandler/stream.Manager pipeline with Coordinator lifecycle management
-- **SDK TLS Mode: Complete — `Config.TLSMode=true` enables full TLS 1.3 + AEAD packet protection**. See the [TLS Quick Start](#tls-quick-start) section above and `cmd/tls-demo/` for a runnable demo.
+| Metric | Value |
+|---|---|
+| Go files | 54 |
+| Test functions | 219 ✅ |
+| Packages | 17 |
+| External deps | 0 (stdlib only) |
 
-## Performance
+| Component | Status |
+|---|---|
+| RFC 9000 (Transport) | ![Complete](https://img.shields.io/badge/Complete-green) |
+| RFC 9001 (TLS Integration) | ![Complete](https://img.shields.io/badge/Complete-green) |
+| RFC 9002 (Loss Detection & CC) | ![Complete](https://img.shields.io/badge/Complete-green) |
+| Connection Layer Integration | ![Complete](https://img.shields.io/badge/Complete-green) |
+| `quic` Package API | ![Complete](https://img.shields.io/badge/Complete-green) |
+| TLS Mode (`Config.TLSMode=true`) | ![Complete](https://img.shields.io/badge/Complete-green) |
+
+- RFC 9001: key derivation, AEAD, header protection, key update, TLS handshake via crypto/tls QUICConn
+- RFC 9002: RTT estimation, PTO, loss detection, NewReno congestion control
+- Connection Layer: crypto, recovery, ACK, frame handler, packet I/O, coordinator, e2e tests
+- **TLS Mode: `Config.TLSMode=true` enables full TLS 1.3 + AEAD packet protection**. See [TLS Quick Start](#-tls-quick-start) and `cmd/tls-demo/`.
+
+## ⚡ Performance
 
 This is a from-scratch, learning-oriented implementation. The numbers below were taken on loopback (`127.0.0.1`), so they reflect pure stack overhead with no network RTT. After fixing the dominant O(N²) (closed streams never retired from the per-connection stream map, so the per-packet delivery loop ranged over a set that grew with the request count), request-rate throughput is now linear in N.
 
-### Methodology
+### 📐 Methodology
 
 - **Request rate**: single QUIC connection, serial (one in-flight request at a time) GET requests with tiny (~tens of bytes) payloads, plaintext path (`TLSMode: false`), run via the `http3-go` companion demo (which depends on this `quic-go` SDK): `go run ./cmd/demo -server -addr 127.0.0.1:PORT` and `go run ./cmd/demo -addr 127.0.0.1:PORT -n N`.
 - **Bulk transfer**: 8 MiB echoed back over a single bidirectional stream via `cmd/echo`.
 
-### Results — request rate (single connection, loopback, after optimization)
+### 📈 Results — request rate (single connection, loopback, after optimization)
 
 | Requests (N) | Total time | Throughput | Latency / request |
 |---:|---:|---:|---:|
@@ -486,19 +532,19 @@ This is a from-scratch, learning-oriented implementation. The numbers below were
 
 Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scalability restored. At N=1,000 this is a **~26× improvement** over the pre-optimization baseline (8.0 s → 0.30 s), and N=10,000 now completes in ~3 s (previously N=1,000 alone took 8 s).
 
-### What was optimized
+### 🔧 What was optimized
 
 1. **Stream retirement (the dominant fix).** `Conn.deliverReceivedStreamData` runs on every received packet and ranged over `c.streams` (plus `Manager.AllStreams()`); `Manager.CloseStream` existed but had **zero callers**, so every closed stream stayed in those maps for the connection's lifetime → an O(N²) per-packet scan. Fully-closed streams (`eofSent && writeClosed`) are now retired from both `c.streams` and the stream `Manager` in that loop.
 2. **ACK delta de-duplication.** ACK frames are cumulative, so each ACK re-described the full acknowledged set and the receiver re-materialized/re-scanned it every time — an O(N) pass per ACK, O(N²) over the run. `AckHandler.NewlyAckedFromFrame` now emits only the *newly*-acked packet numbers (using a per-space high-water mark to skip the already-reported prefix), so both the sent-frame tracker and loss detection do O(delta) work per ACK. (This was a smaller contributor than #1 for the request-rate workload, but is correct and bounded.)
 3. **Stream.Write chunking.** `Stream.Write` previously emitted the entire buffer as a single STREAM frame in one packet; for an 8 MiB write that produced one oversized UDP datagram the kernel silently dropped (bulk transfers made no progress). `Write` now chunks into ≤1100-byte STREAM frames, each its own packet, so the write side completes. (The bulk *echo* round-trip still stalls before finishing 8 MiB — see "Remaining limitations".)
 
-### Remaining limitations
+### ⚠️ Remaining limitations
 
 - **Bulk transfer is flaky.** `Stream.Write` chunking (see "What was optimized" #3) fixed the write side: it now completes (8 MiB queued in ~52 ms) and echo data flows. When it succeeds, a 4 MiB echo round-trip completes in ~130 ms (~60 MiB/s / ~500 Mbit/s) and 1 MiB in ~60 ms (~33 MiB/s) — a major change from "never completes". But it is **flaky**: ~⅔ of runs stall (no progress within 15 s) regardless of transfer size or whether the server is fresh. The stall is a per-connection race in the receive/delivery path under high packet rate, root cause not yet pinned (neither side is CPU-bound during the stall; `sample` shows both idle/blocked). 8 MiB stalls more often than 1–4 MiB. (The request-rate workload uses tiny payloads and is unaffected.)
 - **ACK frequency is effectively 1**: one ACK packet per ack-eliciting received packet (no coalescing or delayed ACK); each request still costs roughly ~10 packets on the wire.
 - NewReno-style congestion control, no pacing.
 
-### Takeaway
+### 🎓 Takeaway
 
 Throughput is still well below a production stack (the reference [quic-go](https://github.com/quic-go/quic-go) reaches multi-Gbit/s and tens of thousands of req/s), which is expected for a single-file-per-concern learning implementation. The highest-leverage remaining improvements, in priority order:
 
