@@ -1,0 +1,955 @@
+package sdk
+
+import (
+	"crypto/rand"
+	"fmt"
+	"net"
+
+	"github.com/Cabbage4/quic-go/connection"
+	"github.com/Cabbage4/quic-go/header"
+	"github.com/Cabbage4/quic-go/transport"
+	"github.com/Cabbage4/quic-go/varint"
+)
+
+// === Listener ===
+
+// Listen creates a QUIC listener on the given address.
+// The network must be "udp" or "udp4" or "udp6".
+func Listen(network, addr string, config *Config) (*Listener, error) {
+	if config == nil {
+		config = DefaultConfig()
+	}
+
+	udpAddr, err := net.ResolveUDPAddr(network, addr)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: resolve address: %w", err)
+	}
+
+	udpConn, err := net.ListenUDP(network, udpAddr)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: listen UDP: %w", err)
+	}
+
+	// Generate a random secret for stateless reset tokens and tokens
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		udpConn.Close()
+		return nil, fmt.Errorf("sdk: generate secret: %w", err)
+	}
+
+	l := &Listener{
+		udpConn:    udpConn,
+		config:     config,
+		connTable:  make(map[string]*Conn),
+		connTableMu: newNetMutex(),
+		secret:     secret,
+		acceptCh:   make(chan *Conn, 64),
+		done:       make(chan struct{}),
+	}
+
+	go l.recvLoop()
+
+	return l, nil
+}
+
+// Addr returns the listener's address.
+func (l *Listener) Addr() net.Addr {
+	return l.udpConn.LocalAddr()
+}
+
+// Accept waits for and returns the next incoming connection.
+func (l *Listener) Accept() (*Conn, error) {
+	select {
+	case c := <-l.acceptCh:
+		return c, nil
+	case <-l.done:
+		return nil, fmt.Errorf("sdk: listener closed")
+	}
+}
+
+// Close stops the listener.
+func (l *Listener) Close() error {
+	if l.closed {
+		return nil
+	}
+	l.closed = true
+	close(l.done)
+	return l.udpConn.Close()
+}
+
+// recvLoop reads UDP datagrams and dispatches them to connections.
+func (l *Listener) recvLoop() {
+	buf := make([]byte, 65535)
+	for {
+		select {
+		case <-l.done:
+			return
+		default:
+		}
+
+		n, raddr, err := l.udpConn.ReadFromUDP(buf)
+		if err != nil {
+			if l.closed {
+				return
+			}
+			continue
+		}
+
+		data := make([]byte, n)
+		copy(data, buf[:n])
+
+		l.handlePacket(data, raddr)
+	}
+}
+
+// handlePacket routes a received packet to the right connection or creates a new one.
+func (l *Listener) handlePacket(data []byte, raddr *net.UDPAddr) {
+	if len(data) < 1 {
+		return
+	}
+
+	// Check header form bit
+	isLongHeader := data[0]&0x80 != 0
+
+	var dcid []byte
+
+	if isLongHeader {
+		// Parse long header to get DCID
+		hdr, _, err := header.DecodeLongHeader(data)
+		if err != nil {
+			return
+		}
+		dcid = hdr.DestConnID
+	} else {
+		// Short header: DCID has no length prefix. We need to find the connection
+		// by matching known CIDs. Iterate through all connections and check if
+		// the bytes after the first byte match any connection's SrcConnID.
+		l.connTableMu.Lock()
+		for _, c := range l.connTable {
+			scid := c.connMgr.SrcConnID()
+			if len(scid) > 0 && len(data) > 1+len(scid) {
+				if matchBytes(data[1:1+len(scid)], scid) {
+					dcid = scid
+					break
+				}
+			}
+		}
+		l.connTableMu.Unlock()
+	}
+
+	// Look up connection by DCID
+	dcidKey := string(dcid)
+	l.connTableMu.Lock()
+	c, ok := l.connTable[dcidKey]
+	l.connTableMu.Unlock()
+
+	if ok {
+		// Route to existing connection
+		c.handleIncoming(data, raddr, isLongHeader)
+		return
+	}
+
+	// New connection from Initial packet
+	if isLongHeader {
+		hdr, _, err := header.DecodeLongHeader(data)
+		if err != nil {
+			return
+		}
+
+		// Only handle Initial packets for new connections
+		if hdr.Type == header.PacketTypeInitial {
+			l.createNewConnection(hdr, data, raddr)
+		}
+	}
+}
+
+// createNewConnection handles an Initial packet from a new client.
+func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, raddr *net.UDPAddr) {
+	// Create a new server-side connection
+	params := l.config.toTransportParams()
+
+	conn := connection.NewConnection(true, transport.Params{})
+
+	// Generate server source CID
+	srcCID, err := connection.GenerateConnID(l.config.ConnIDLength)
+	if err != nil {
+		return
+	}
+
+	conn.ConnIDManager().InitSrcConnID(srcCID)
+	// Use client's SCID as our DCID
+	conn.ConnIDManager().InitDestConnID(hdr.SrcConnID)
+
+	// Set transport parameters
+	tp := transport.Params(params)
+	conn.SetPeerParams(tp)
+
+	// Register the connection with the DCID from the Initial packet
+	c := &Conn{
+		conn:           conn,
+		connMgr:        conn.ConnIDManager(),
+		udpConn:        l.udpConn,
+		remoteAddr:     raddr,
+		listener:       l,
+		config:         l.config,
+		sendQueue:      make(chan []byte, 256),
+		acceptStreamCh: make(chan *Stream, 64),
+		closeCh:        make(chan struct{}),
+		isServer:       true,
+		streams:        make(map[uint64]*Stream),
+		streamsMu:      newNetMutex(),
+	}
+
+	// Add to connection table
+	dcidKey := string(hdr.DestConnID)
+	l.connTableMu.Lock()
+	l.connTable[dcidKey] = c
+	// Also register with our server CID
+	scidKey := string(srcCID)
+	l.connTable[scidKey] = c
+	l.connTableMu.Unlock()
+
+	// Set up close callback
+	conn.OnClose(func() {
+		l.connTableMu.Lock()
+		delete(l.connTable, dcidKey)
+		delete(l.connTable, scidKey)
+		l.connTableMu.Unlock()
+		close(c.closeCh)
+	})
+
+	// Start the connection's send loop
+	go c.sendLoop()
+
+	// Process the initial packet
+	c.handleIncoming(data, raddr, true)
+
+	// Send a server response: Initial packet with PING + HANDSHAKE_DONE
+	c.sendServerInitial()
+
+	// Notify Accept()
+	select {
+	case l.acceptCh <- c:
+	default:
+		// Accept queue full, drop connection
+	}
+}
+
+// sendServerInitial sends the server's Initial response packet.
+func (c *Conn) sendServerInitial() {
+	// Build payload: PING + HANDSHAKE_DONE
+	payload := []byte{0x01, 0x1e} // PING + HANDSHAKE_DONE
+
+	pn := c.conn.NextPacketNumber(connection.PNSpaceInitial)
+
+	hdr := &header.LongHeader{
+		Type:            header.PacketTypeInitial,
+		Version:         header.Version,
+		DestConnID:      c.connMgr.DestConnID(), // client's SCID
+		SrcConnID:       c.connMgr.SrcConnID(),  // our server SCID
+		Token:           nil,
+		PacketNumber:    pn,
+		PacketNumberLen: 4,
+		Payload:         payload,
+	}
+
+	packet, err := hdr.Encode()
+	if err == nil {
+		c.udpConn.WriteToUDP(packet, c.remoteAddr)
+	}
+}
+
+// === Dialer (Client) ===
+
+// Dial establishes a QUIC connection to the given address.
+func Dial(network, addr string, config *Config) (*Conn, error) {
+	if config == nil {
+		config = DefaultConfig()
+	}
+
+	udpAddr, err := net.ResolveUDPAddr(network, addr)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: resolve address: %w", err)
+	}
+
+	// Use a local ephemeral port
+	localAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+	udpConn, err := net.DialUDP(network, localAddr, udpAddr)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: dial UDP: %w", err)
+	}
+
+	// Generate client source CID
+	srcCID, err := connection.GenerateConnID(config.ConnIDLength)
+	if err != nil {
+		udpConn.Close()
+		return nil, fmt.Errorf("sdk: generate CID: %w", err)
+	}
+
+	// Generate initial destination CID (random, will be replaced by server's CID)
+	initialDCID, err := connection.GenerateConnID(config.ConnIDLength)
+	if err != nil {
+		udpConn.Close()
+		return nil, fmt.Errorf("sdk: generate initial DCID: %w", err)
+	}
+
+	conn := connection.NewConnection(false, config.toTransportParams())
+
+	connMgr := conn.ConnIDManager()
+	connMgr.InitSrcConnID(srcCID)
+	connMgr.InitDestConnID(initialDCID)
+
+	c := &Conn{
+		conn:           conn,
+		connMgr:        connMgr,
+		udpConn:        udpConn,
+		remoteAddr:     udpAddr,
+		config:         config,
+		sendQueue:      make(chan []byte, 256),
+		acceptStreamCh: make(chan *Stream, 64),
+		closeCh:        make(chan struct{}),
+		isServer:       false,
+		streams:        make(map[uint64]*Stream),
+		streamsMu:      newNetMutex(),
+	}
+
+	// Send Initial packet
+	if err := c.sendInitial(srcCID, initialDCID); err != nil {
+		udpConn.Close()
+		return nil, fmt.Errorf("sdk: send initial: %w", err)
+	}
+
+	// Start receiving
+	go c.clientRecvLoop()
+
+	// Start send loop
+	go c.sendLoop()
+
+	// Set up idle timeout
+	if config.MaxIdleTimeout > 0 {
+		conn.SetIdleTimeout(config.MaxIdleTimeout)
+		conn.StartIdleTimer()
+	}
+
+	return c, nil
+}
+
+// sendInitial builds and sends an Initial packet.
+func (c *Conn) sendInitial(srcCID, destCID []byte) error {
+	// Build a minimal Initial packet with a PING frame
+	pingFrame := []byte{0x01} // PING frame type
+
+	// Build the Initial packet header
+	pn := c.conn.NextPacketNumber(connection.PNSpaceInitial)
+
+	hdr := &header.LongHeader{
+		Type:            header.PacketTypeInitial,
+		Version:         header.Version,
+		DestConnID:      destCID,
+		SrcConnID:       srcCID,
+		Token:           nil,
+		PacketNumber:    pn,
+		PacketNumberLen: 4,
+		Payload:         pingFrame,
+	}
+
+	packet, err := hdr.Encode()
+	if err != nil {
+		return err
+	}
+
+	_, err = c.udpConn.Write(packet)
+	return err
+}
+
+// clientRecvLoop reads packets from the UDP connection (client side).
+func (c *Conn) clientRecvLoop() {
+	buf := make([]byte, 65535)
+	for {
+		select {
+		case <-c.closeCh:
+			return
+		default:
+		}
+
+		n, raddr, err := c.udpConn.ReadFromUDP(buf)
+		if err != nil {
+			select {
+			case <-c.closeCh:
+				return
+			default:
+			}
+			continue
+		}
+
+		data := make([]byte, n)
+		copy(data, buf[:n])
+
+		c.remoteAddr = raddr
+		isLong := len(data) > 0 && data[0]&0x80 != 0
+		c.handleIncoming(data, raddr, isLong)
+	}
+}
+
+// === Connection Methods ===
+
+// sendLoop processes the send queue and writes packets to the network.
+func (c *Conn) sendLoop() {
+	for {
+		select {
+		case <-c.closeCh:
+			return
+		case data := <-c.sendQueue:
+			if c.remoteAddr == nil {
+				continue
+			}
+			if c.isServer {
+				c.udpConn.WriteToUDP(data, c.remoteAddr)
+			} else {
+				c.udpConn.Write(data)
+			}
+		}
+	}
+}
+
+// handleIncoming processes a received packet.
+func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool) {
+	c.conn.TouchActivity()
+
+	if isLongHeader {
+		hdr, _, err := header.DecodeLongHeader(data)
+		if err != nil {
+			return
+		}
+
+		// On client side: update our DCID to the server's SCID
+		if !c.isServer && len(hdr.SrcConnID) > 0 {
+			c.connMgr.InitDestConnID(hdr.SrcConnID)
+		}
+
+		// Process payload frames
+		if len(hdr.Payload) > 0 {
+			c.processFrames(hdr.Payload, connection.PNSpaceInitial)
+		}
+
+		// If we got a Handshake or HANDSHAKE_DONE, transition to established
+		if hdr.Type == header.PacketTypeHandshake {
+			c.conn.SetState(connection.StateEstablished)
+		}
+	} else {
+		// Short header (1-RTT data packet)
+		dcidLen := len(c.connMgr.SrcConnID())
+		if dcidLen == 0 {
+			dcidLen = c.config.ConnIDLength
+		}
+		hdr, _, err := header.DecodeShortHeader(data, dcidLen)
+		if err != nil {
+			return
+		}
+		if len(hdr.Payload) > 0 {
+			c.processFrames(hdr.Payload, connection.PNSpaceApplication)
+		}
+	}
+}
+
+// processFrames decodes and dispatches frames in a packet payload.
+func (c *Conn) processFrames(payload []byte, space connection.PNSpace) {
+	offset := 0
+	for offset < len(payload) {
+		// Read frame type
+		ft, n, err := varint.Decode(payload[offset:])
+		if err != nil {
+			break
+		}
+		offset += n
+
+		switch {
+		case ft == 0x00: // PADDING
+			// Just skip
+			continue
+
+		case ft == 0x01: // PING
+			// Nothing to do, just an ack-eliciting frame
+			continue
+
+		case ft == 0x08 || (ft >= 0x08 && ft <= 0x0f): // STREAM
+			// Parse STREAM frame
+			s, consumed, err := parseStreamFrame(payload[offset-1:])
+			if err != nil {
+				break
+			}
+			offset += consumed - 1 // -1 because we already consumed the frame type
+
+			// Deliver data to the stream
+			c.deliverStreamData(s)
+
+		case ft == 0x1e: // HANDSHAKE_DONE
+			c.conn.SetState(connection.StateEstablished)
+
+		case ft == 0x1c || ft == 0x1d: // CONNECTION_CLOSE
+			// Peer is closing the connection
+			c.conn.SetState(connection.StateDraining)
+			select {
+			case <-c.closeCh:
+			default:
+				close(c.closeCh)
+			}
+
+		default:
+			// For unhandled frame types, try to skip
+			// In a real implementation we'd parse each frame properly
+			break
+		}
+	}
+}
+
+// parsedStreamData holds parsed STREAM frame data.
+type parsedStreamData struct {
+	StreamID uint64
+	Offset   uint64
+	Data     []byte
+	FIN     bool
+}
+
+// parseStreamFrame parses a STREAM frame from the given data (including frame type byte).
+// Returns the parsed data and the number of bytes consumed (including the type byte).
+func parseStreamFrame(data []byte) (*parsedStreamData, int, error) {
+	if len(data) < 1 {
+		return nil, 0, fmt.Errorf("empty data")
+	}
+
+	// Frame type byte: 0b00001_FSO (F=FIN, S=offset, O=Len)
+	ftByte := data[0]
+	offset := 1
+
+	hasFIN := ftByte&0x01 != 0
+	hasOffset := ftByte&0x02 != 0
+	hasLen := ftByte&0x04 != 0
+
+	// Stream ID (varint)
+	streamID, n, err := varint.Decode(data[offset:])
+	if err != nil {
+		return nil, 0, fmt.Errorf("stream ID: %w", err)
+	}
+	offset += n
+
+	// Offset (varint, if present)
+	var streamOffset uint64
+	if hasOffset {
+		streamOffset, n, err = varint.Decode(data[offset:])
+		if err != nil {
+			return nil, 0, fmt.Errorf("offset: %w", err)
+		}
+		offset += n
+	}
+
+	// Length (varint, if present)
+	var dataLen uint64
+	if hasLen {
+		dataLen, n, err = varint.Decode(data[offset:])
+		if err != nil {
+			return nil, 0, fmt.Errorf("length: %w", err)
+		}
+		offset += n
+	}
+
+	// Data
+	var streamData []byte
+	if hasLen {
+		if offset+int(dataLen) > len(data) {
+			return nil, 0, fmt.Errorf("stream data too short")
+		}
+		streamData = make([]byte, dataLen)
+		copy(streamData, data[offset:offset+int(dataLen)])
+		offset += int(dataLen)
+	} else {
+		// No length: rest of the packet is data
+		streamData = make([]byte, len(data)-offset)
+		copy(streamData, data[offset:])
+		offset = len(data)
+	}
+
+	return &parsedStreamData{
+		StreamID: streamID,
+		Offset:   streamOffset,
+		Data:     streamData,
+		FIN:      hasFIN,
+	}, offset, nil
+}
+
+// deliverStreamData delivers received stream data to the appropriate stream.
+func (c *Conn) deliverStreamData(s *parsedStreamData) {
+	// Get or create the stream
+	streamObj, exists := c.getStream(s.StreamID)
+	if !exists {
+		// Peer-initiated stream — create it
+		streamObj = c.createPeerStream(s.StreamID)
+		if streamObj == nil {
+			return
+		}
+		// Notify AcceptStream for bidirectional streams
+		if streamObj.bidi {
+			select {
+			case c.acceptStreamCh <- streamObj:
+			default:
+			}
+		}
+	}
+
+	// Deliver data to the stream's read channel
+	if len(s.Data) > 0 {
+		select {
+		case streamObj.readCh <- s.Data:
+		case <-streamObj.closeCh:
+		}
+	}
+
+	// Handle FIN
+	if s.FIN {
+		select {
+		case streamObj.readCh <- nil: // nil = EOF signal
+		case <-streamObj.closeCh:
+		}
+	}
+}
+
+// getStream retrieves a stream by ID.
+func (c *Conn) getStream(id uint64) (*Stream, bool) {
+	c.streamsMu.Lock()
+	defer c.streamsMu.Unlock()
+
+	if c.streams == nil {
+		return nil, false
+	}
+	s, ok := c.streams[id]
+	return s, ok
+}
+
+// createPeerStream creates a stream for a peer-initiated stream ID.
+func (c *Conn) createPeerStream(id uint64) *Stream {
+	c.streamsMu.Lock()
+	defer c.streamsMu.Unlock()
+
+	if c.streams == nil {
+		c.streams = make(map[uint64]*Stream)
+	}
+	if s, ok := c.streams[id]; ok {
+		return s
+	}
+
+	bidi := (id & 0x02) == 0
+	s := &Stream{
+		id:      id,
+		bidi:    bidi,
+		conn:    c,
+		readCh:  make(chan []byte, 64),
+		closeCh: make(chan struct{}),
+	}
+	c.streams[id] = s
+	return s
+}
+
+// === Public Conn Methods ===
+
+// OpenStream opens a new bidirectional stream.
+func (c *Conn) OpenStream() (*Stream, error) {
+	return c.openStream(true)
+}
+
+// OpenUniStream opens a new unidirectional stream (send-only).
+func (c *Conn) OpenUniStream() (*Stream, error) {
+	return c.openStream(false)
+}
+
+// openStream opens a new stream with the given direction.
+func (c *Conn) openStream(bidi bool) (*Stream, error) {
+	c.streamsMu.Lock()
+	defer c.streamsMu.Unlock()
+
+	if c.streams == nil {
+		c.streams = make(map[uint64]*Stream)
+		// Initialize stream ID counters based on role
+		if c.isServer {
+			c.nextServerBidi = 1
+			c.nextServerUni = 3
+		} else {
+			c.nextClientBidi = 0
+			c.nextClientUni = 2
+		}
+	}
+
+	// Allocate stream ID
+	var id uint64
+	if bidi {
+		if c.isServer {
+			id = c.nextServerBidi
+			c.nextServerBidi += 4
+		} else {
+			id = c.nextClientBidi
+			c.nextClientBidi += 4
+		}
+	} else {
+		if c.isServer {
+			id = c.nextServerUni
+			c.nextServerUni += 4
+		} else {
+			id = c.nextClientUni
+			c.nextClientUni += 4
+		}
+	}
+
+	s := &Stream{
+		id:      id,
+		bidi:    bidi,
+		conn:    c,
+		readCh:  make(chan []byte, 64),
+		closeCh: make(chan struct{}),
+	}
+	c.streams[id] = s
+	return s, nil
+}
+
+// AcceptStream waits for and returns the next incoming stream.
+func (c *Conn) AcceptStream() (*Stream, error) {
+	select {
+	case s := <-c.acceptStreamCh:
+		return s, nil
+	case <-c.closeCh:
+		return nil, fmt.Errorf("connection closed")
+	}
+}
+
+// Close closes the connection.
+func (c *Conn) Close() error {
+	select {
+	case <-c.closeCh:
+		return nil // already closed
+	default:
+	}
+	close(c.closeCh)
+
+	// Close all streams
+	c.streamsMu.Lock()
+	for _, s := range c.streams {
+		s.closeLocal()
+	}
+	c.streamsMu.Unlock()
+
+	// Send CONNECTION_CLOSE frame
+	closeFrame := buildConnectionCloseFrame(0, "connection closed")
+	pn := c.conn.NextPacketNumber(connection.PNSpaceApplication)
+
+	hdr := &header.ShortHeader{
+		DestConnID:      c.connMgr.DestConnID(),
+		PacketNumber:    pn,
+		PacketNumberLen: 4,
+		Payload:         closeFrame,
+	}
+
+	packet, err := hdr.Encode()
+	if err == nil {
+		c.udpConn.WriteToUDP(packet, c.remoteAddr)
+	}
+
+	c.conn.SetState(connection.StateClosed)
+
+	if c.listener == nil {
+		c.udpConn.Close()
+	}
+
+	return nil
+}
+
+// IsClosed returns whether the connection is closed.
+func (c *Conn) IsClosed() bool {
+	select {
+	case <-c.closeCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// RemoteAddr returns the remote address.
+func (c *Conn) RemoteAddr() net.Addr {
+	if c.remoteAddr != nil {
+		return c.remoteAddr
+	}
+	return nil
+}
+
+// LocalAddr returns the local address.
+func (c *Conn) LocalAddr() net.Addr {
+	return c.udpConn.LocalAddr()
+}
+
+// === Stream Methods ===
+
+// Write writes data to the stream, sending it in STREAM frames.
+func (s *Stream) Write(data []byte) (int, error) {
+	if s.writeClosed {
+		return 0, fmt.Errorf("stream closed for writing")
+	}
+
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	// Build STREAM frame
+	// Frame type: 0b00001_1_1_1 = 0x0f (FIN=0, Offset=1, Len=1)
+	// We set: OFF bit (0x04), LEN bit (0x02), but not FIN
+	frameType := byte(0x08 | 0x04 | 0x02) // STREAM with OFF and LEN, no FIN
+
+	buf := []byte{frameType}
+
+	// Stream ID (varint)
+	sidBytes, _ := varint.Encode(s.id)
+	buf = append(buf, sidBytes...)
+
+	// Offset (varint)
+	offBytes, _ := varint.Encode(s.writeOffset)
+	buf = append(buf, offBytes...)
+
+	// Length (varint)
+	lenBytes, _ := varint.Encode(uint64(len(data)))
+	buf = append(buf, lenBytes...)
+
+	// Data
+	buf = append(buf, data...)
+
+	// Wrap in a short header packet
+	pn := s.conn.conn.NextPacketNumber(connection.PNSpaceApplication)
+
+	hdr := &header.ShortHeader{
+		DestConnID:      s.conn.connMgr.DestConnID(),
+		PacketNumber:    pn,
+		PacketNumberLen: 4,
+		Payload:         buf,
+	}
+
+	packet, err := hdr.Encode()
+	if err != nil {
+		return 0, err
+	}
+
+	s.conn.sendQueue <- packet
+	s.writeOffset += uint64(len(data))
+
+	return len(data), nil
+}
+
+// Close closes the stream (sends FIN).
+func (s *Stream) Close() error {
+	if s.writeClosed {
+		return nil
+	}
+	s.writeClosed = true
+
+	// Send a STREAM frame with FIN and empty data
+	frameType := byte(0x08 | 0x04 | 0x02 | 0x01) // STREAM with FIN, OFF, LEN
+
+	buf := []byte{frameType}
+	sidBytes, _ := varint.Encode(s.id)
+	buf = append(buf, sidBytes...)
+
+	offBytes, _ := varint.Encode(s.writeOffset)
+	buf = append(buf, offBytes...)
+
+	lenBytes, _ := varint.Encode(0) // zero-length data
+	buf = append(buf, lenBytes...)
+
+	pn := s.conn.conn.NextPacketNumber(connection.PNSpaceApplication)
+
+	hdr := &header.ShortHeader{
+		DestConnID:      s.conn.connMgr.DestConnID(),
+		PacketNumber:    pn,
+		PacketNumberLen: 4,
+		Payload:         buf,
+	}
+
+	packet, err := hdr.Encode()
+	if err != nil {
+		return err
+	}
+
+	s.conn.sendQueue <- packet
+	return nil
+}
+
+// closeLocal closes the stream without sending anything (used during conn shutdown).
+func (s *Stream) closeLocal() {
+	if !s.closed {
+		s.closed = true
+		close(s.closeCh)
+	}
+}
+// Read reads data from the stream. Returns io.EOF when the stream is finished.
+func (s *Stream) Read(p []byte) (int, error) {
+	// If we have buffered data, return it
+	if len(s.readBuf) > 0 {
+		n := copy(p, s.readBuf)
+		s.readBuf = s.readBuf[n:]
+		return n, nil
+	}
+
+	select {
+	case data, ok := <-s.readCh:
+		if !ok || data == nil {
+			// EOF
+			return 0, fmt.Errorf("EOF")
+		}
+		n := copy(p, data)
+		if n < len(data) {
+			// Save remaining
+			s.readBuf = data[n:]
+		}
+		return n, nil
+	case <-s.closeCh:
+		return 0, fmt.Errorf("stream closed")
+	}
+}
+
+// ID returns the stream ID.
+func (s *Stream) ID() uint64 {
+	return s.id
+}
+
+// IsBidirectional returns whether the stream is bidirectional.
+func (s *Stream) IsBidirectional() bool {
+	return s.bidi
+}
+
+// === Helpers ===
+
+// buildConnectionCloseFrame builds a CONNECTION_CLOSE frame.
+func buildConnectionCloseFrame(errorCode uint64, reason string) []byte {
+	// Frame type: 0x1c (transport error)
+	buf := []byte{0x1c}
+
+	// Error code (varint)
+	ecBytes, _ := varint.Encode(errorCode)
+	buf = append(buf, ecBytes...)
+
+	// Frame type that triggered the error (varint) — 0 for no specific frame
+	buf = append(buf, 0x00)
+
+	// Reason phrase length (varint) + reason
+	rpBytes, _ := varint.Encode(uint64(len(reason)))
+	buf = append(buf, rpBytes...)
+	buf = append(buf, []byte(reason)...)
+
+	return buf
+}
+
+// matchBytes compares two byte slices.
+func matchBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
