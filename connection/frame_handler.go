@@ -53,6 +53,10 @@ type FrameHandler struct {
 	// Pending PATH_RESPONSE frames (queued from received PATH_CHALLENGE)
 	pendingPathResponses []*frames.PathResponse
 
+	// Pending CRYPTO data to feed to TLS (queued from handleCryptoFrame
+	// to avoid deadlock with the TLS event loop in driveHandshakeLoop)
+	pendingCryptoData []pendingCrypto
+
 	// Pending transport params callback
 	onTransportParams func([]byte)
 
@@ -64,6 +68,12 @@ type FrameHandler struct {
 	// Used to process ACKs and update stream state machines
 	sentFrames    map[uint64][]sentFrameInfo
 	sentFramesMu  sync.Mutex
+}
+
+// pendingCrypto holds queued CRYPTO frame data waiting to be fed to TLS.
+type pendingCrypto struct {
+	level crypto.EncryptionLevel
+	data  []byte
 }
 
 // sentFrameInfo records what was in a sent packet for ACK processing.
@@ -280,10 +290,20 @@ func (h *FrameHandler) handleCryptoFrame(f *frames.Crypto, pnSpace PNSpace) (boo
 	// Map PN space to encryption level
 	level := PNSpaceToEncryptionLevel(pnSpace)
 
-	// Feed CRYPTO data to the TLS session
-	if derr := h.keyStore.FeedCryptoData(level, f.Data); derr != nil {
-		return true, fmt.Errorf("connection: CRYPTO frame handling failed: %w", derr)
+	// Queue CRYPTO data for the TLS handshake loop to process.
+	// This avoids deadlock: HandleCryptoData would block if the
+	// driveHandshakeLoop is currently holding the TLS session mutex
+	// in Start()/processEvents(). By queuing, the driveHandshakeLoop
+	// can feed the data and process events in the same goroutine.
+	// Note: handleCryptoFrame is called from ProcessFrames which
+	// already holds h.mu, so we don't need to lock here.
+	if h.pendingCryptoData == nil {
+		h.pendingCryptoData = make([]pendingCrypto, 0, 4)
 	}
+	h.pendingCryptoData = append(h.pendingCryptoData, pendingCrypto{
+		level: level,
+		data:  f.Data,
+	})
 
 	// Check if handshake completed
 	session := h.keyStore.TLSSession()
@@ -396,6 +416,30 @@ func (h *FrameHandler) handleHandshakeDone() (bool, error) {
 }
 
 // === Outgoing frame generation ===
+
+// FlushPendingCryptoData feeds all queued CRYPTO frame data to the TLS
+// session. This is called by the driveHandshakeLoop to avoid deadlock
+// with the TLS event loop mutex.
+func (h *FrameHandler) FlushPendingCryptoData() error {
+	h.mu.Lock()
+	queued := h.pendingCryptoData
+	h.pendingCryptoData = nil
+	h.mu.Unlock()
+
+	for _, pc := range queued {
+		if err := h.keyStore.FeedCryptoData(pc.level, pc.data); err != nil {
+			return fmt.Errorf("connection: CRYPTO frame handling failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// PendingCryptoCount returns the number of queued CRYPTO data items.
+func (h *FrameHandler) PendingCryptoCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.pendingCryptoData)
+}
 
 // GenerateControlFrames builds control frames that need to be sent.
 // This includes:

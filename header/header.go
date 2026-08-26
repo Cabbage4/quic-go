@@ -56,6 +56,9 @@ type LongHeader struct {
 	PacketNumberLen   int      // 1-4 bytes, encoded in byte 0 bits 0-1
 	Payload           []byte   // encrypted payload
 	IsRetry           bool
+	Length            uint64   // if > 0, overrides computed length (for AEAD tag)
+	LengthValue       uint64   // decoded Length field value (PN + payload), not masked
+	PNOffset          int      // byte offset of PN field (set by DecodeLongHeaderPartial)
 }
 
 // Encode serializes a long header packet into bytes.
@@ -116,7 +119,13 @@ func (h *LongHeader) Encode() ([]byte, error) {
 		if pnLen > 4 {
 			pnLen = 4
 		}
-		lengthVal := uint64(pnLen + len(h.Payload))
+		var lengthVal uint64
+		if h.Length > 0 {
+			// Use explicit Length (accounts for AEAD tag when pre-encrypting)
+			lengthVal = h.Length
+		} else {
+			lengthVal = uint64(pnLen + len(h.Payload))
+		}
 		lenBytes, err := varint.Encode(lengthVal)
 		if err != nil {
 			return nil, err
@@ -140,9 +149,165 @@ func (h *LongHeader) Encode() ([]byte, error) {
 	return buf, nil
 }
 
+// DecodeLongHeaderPartial decodes only the unmasked portions of a long header
+// from a protected (header-protected) packet. It reads:
+//   - Byte 0: header form bit (0x80), fixed bit (0x40), type (bits 4-5)
+//     The lower 4 bits (reserved + PN length) are masked and NOT validated/read.
+//   - Version (4 bytes)
+//   - DCID length + DCID
+//   - SCID length + SCID
+//   - Token length + Token (Initial only)
+//   - Length varint
+//
+// It does NOT read the packet number or payload (those require HP removal first).
+// It does NOT validate reserved bits (they are masked).
+//
+// Returns the parsed header with PNOffset and LengthValue set, plus bytes consumed.
+func DecodeLongHeaderPartial(data []byte) (*LongHeader, int, error) {
+	if len(data) < 1 {
+		return nil, 0, errors.New("header: data too short")
+	}
+
+	firstByte := data[0]
+	// Check header form bit (MSB)
+	if firstByte&0x80 == 0 {
+		return nil, 0, errors.New("header: not a long header (header form bit = 0)")
+	}
+	// Check fixed bit (must be 1) — this bit is NOT masked
+	if firstByte&0x40 == 0 {
+		return nil, 0, errors.New("header: invalid fixed bit (must be 1)")
+	}
+
+	// NOTE: Do NOT validate reserved bits or read PN length from byte 0.
+	// Those bits are masked by header protection.
+
+	h := &LongHeader{}
+
+	// Type from bits 4-5 (these are NOT masked)
+	h.Type = PacketType((firstByte >> 4) & 0x03)
+	h.IsRetry = h.Type == PacketTypeRetry
+
+	offset := 1
+
+	// Version (4 bytes)
+	if offset+4 > len(data) {
+		return nil, 0, errors.New("header: version too short")
+	}
+	h.Version = binary.BigEndian.Uint32(data[offset:])
+	offset += 4
+
+	// Destination Connection ID
+	if offset >= len(data) {
+		return nil, 0, errors.New("header: missing DCID length")
+	}
+	dcidLen := int(data[offset])
+	offset++
+	if offset+dcidLen > len(data) {
+		return nil, 0, errors.New("header: DCID too short")
+	}
+	h.DestConnID = make([]byte, dcidLen)
+	copy(h.DestConnID, data[offset:offset+dcidLen])
+	offset += dcidLen
+
+	// Source Connection ID
+	if offset >= len(data) {
+		return nil, 0, errors.New("header: missing SCID length")
+	}
+	scidLen := int(data[offset])
+	offset++
+	if offset+scidLen > len(data) {
+		return nil, 0, errors.New("header: SCID too short")
+	}
+	h.SrcConnID = make([]byte, scidLen)
+	copy(h.SrcConnID, data[offset:offset+scidLen])
+	offset += scidLen
+
+	if h.Type == PacketTypeInitial {
+		// Token Length (varint)
+		tokenLen, n, err := varint.Decode(data[offset:])
+		if err != nil {
+			return nil, 0, fmt.Errorf("header: decode token length: %w", err)
+		}
+		offset += n
+		if offset+int(tokenLen) > len(data) {
+			return nil, 0, errors.New("header: token too short")
+		}
+		h.Token = make([]byte, tokenLen)
+		copy(h.Token, data[offset:offset+int(tokenLen)])
+		offset += int(tokenLen)
+	}
+
+	if !h.IsRetry {
+		// Length (varint) — this field is NOT masked
+		length, n, err := varint.Decode(data[offset:])
+		if err != nil {
+			return nil, 0, fmt.Errorf("header: decode length: %w", err)
+		}
+		h.LengthValue = length
+		offset += n
+
+		// PN starts here
+		h.PNOffset = offset
+	}
+
+	return h, offset, nil
+}
+
+// DecodeShortHeaderPartial decodes only the unmasked portions of a short header
+// from a protected packet. It reads:
+//   - Byte 0: header form bit (0x80 = 0 for short), fixed bit (0x40), spin bit (0x20)
+//     The lower 5 bits (reserved, key phase, PN length) are masked and NOT read.
+//   - DCID (length must be known from context)
+//
+// It does NOT read the packet number or payload (those require HP removal first).
+// It does NOT validate reserved bits (they are masked).
+//
+// Returns PNOffset = 1 + dcidLen, and bytes consumed = 1 + dcidLen.
+func DecodeShortHeaderPartial(data []byte, dcidLen int) (*ShortHeader, int, error) {
+	if len(data) < 1 {
+		return nil, 0, errors.New("header: data too short")
+	}
+	firstByte := data[0]
+	if firstByte&0x80 != 0 {
+		return nil, 0, errors.New("header: not a short header (header form bit = 1)")
+	}
+	if firstByte&0x40 == 0 {
+		return nil, 0, errors.New("header: invalid fixed bit (must be 1)")
+	}
+
+	// NOTE: Do NOT validate reserved bits or read PN length/key phase from byte 0.
+	// Those bits are masked by header protection.
+
+	h := &ShortHeader{
+		// SpinBit is in bit 5 (0x20) — this bit is NOT masked
+		SpinBit: firstByte&0x20 != 0,
+	}
+
+	offset := 1
+
+	// DCID (no length prefix; length known from context)
+	if offset+dcidLen > len(data) {
+		return nil, 0, errors.New("header: DCID too short")
+	}
+	h.DestConnID = make([]byte, dcidLen)
+	copy(h.DestConnID, data[offset:offset+dcidLen])
+	offset += dcidLen
+
+	// PN starts here
+	// We can't set PNOffset on ShortHeader since it doesn't have that field,
+	// but the caller knows it's 1 + dcidLen.
+
+	return h, offset, nil
+}
+
 // DecodeLongHeader parses a long header from the given byte slice.
 // It returns the parsed header, the number of bytes consumed, and any error.
 // Returns an error if the reserved bits are non-zero (PROTOCOL_VIOLATION per §17.2).
+//
+// WARNING: This function reads the PN length and packet number from byte 0.
+// For protected (header-protected) packets, byte 0's lower 4 bits are masked.
+// Use DecodeLongHeaderPartial for protected packets, then call this function
+// again after removing header protection.
 func DecodeLongHeader(data []byte) (*LongHeader, int, error) {
 	if len(data) < 1 {
 		return nil, 0, errors.New("header: data too short")

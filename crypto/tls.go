@@ -68,6 +68,7 @@ type TLSSession struct {
 	// Handshake state
 	handshakeComplete      bool
 	handshakeConfirmed     bool
+	started                bool
 	receivedTransportParams []byte
 	negotiatedProtocol     string
 
@@ -136,17 +137,23 @@ func NewTLSSession(config *TLSConfig) (*TLSSession, error) {
 //
 // Transport parameters must be set via SetTransportParameters before Start
 // (or in response to the QUICTransportParametersRequired event).
+//
+// Start may be called multiple times — only the first call actually invokes
+// conn.Start(); subsequent calls just process pending TLS events.
 func (s *TLSSession) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Set transport parameters if provided
-	if len(s.config.TransportParameters) > 0 {
-		s.conn.SetTransportParameters(s.config.TransportParameters)
-	}
+	if !s.started {
+		// Set transport parameters if provided
+		if len(s.config.TransportParameters) > 0 {
+			s.conn.SetTransportParameters(s.config.TransportParameters)
+		}
 
-	if err := s.conn.Start(ctx); err != nil {
-		return fmt.Errorf("crypto: TLS Start failed: %w", err)
+		if err := s.conn.Start(ctx); err != nil {
+			return fmt.Errorf("crypto: TLS Start failed: %w", err)
+		}
+		s.started = true
 	}
 
 	return s.processEvents()
@@ -194,48 +201,48 @@ func (s *TLSSession) processEvents() error {
 		case tls.QUICNoEvent:
 			return nil
 
-		case tls.QUICSetReadSecret:
-			level := tlsToQUICLevel(event.Level)
-			secret := event.Data
-			csID := CipherSuiteID(event.Suite)
-			s.cipherSuiteID = csID
-			cs, ok := GetCipherSuite(csID)
-			if !ok {
-				cs = DefaultCipherSuite()
-			}
-			keys := DeriveTrafficKeys(secret, cs)
-			ks, err := NewKeySet(keys, cs.ID, true)
-			if err != nil {
-				return fmt.Errorf("crypto: failed to create read key set: %w", err)
-			}
-			if s.onReadKeys != nil {
-				s.onReadKeys(level, ks)
-			}
+	case tls.QUICSetReadSecret:
+		level := tlsToQUICLevel(event.Level)
+		secret := event.Data
+		csID := CipherSuiteID(event.Suite)
+		s.cipherSuiteID = csID
+		cs, ok := GetCipherSuite(csID)
+		if !ok {
+			cs = DefaultCipherSuite()
+		}
+		keys := DeriveTrafficKeys(secret, cs)
+		ks, err := NewKeySet(keys, cs.ID, true)
+		if err != nil {
+			return fmt.Errorf("crypto: failed to create read key set: %w", err)
+		}
+		if s.onReadKeys != nil {
+			s.onReadKeys(level, ks)
+		}
 
-		case tls.QUICSetWriteSecret:
-			level := tlsToQUICLevel(event.Level)
-			secret := event.Data
-			csID := CipherSuiteID(event.Suite)
-			s.cipherSuiteID = csID
-			cs, ok := GetCipherSuite(csID)
-			if !ok {
-				cs = DefaultCipherSuite()
-			}
-			keys := DeriveTrafficKeys(secret, cs)
-			ks, err := NewKeySet(keys, cs.ID, true)
-			if err != nil {
-				return fmt.Errorf("crypto: failed to create write key set: %w", err)
-			}
-			if s.onWriteKeys != nil {
-				s.onWriteKeys(level, ks)
-			}
+	case tls.QUICSetWriteSecret:
+		level := tlsToQUICLevel(event.Level)
+		secret := event.Data
+		csID := CipherSuiteID(event.Suite)
+		s.cipherSuiteID = csID
+		cs, ok := GetCipherSuite(csID)
+		if !ok {
+			cs = DefaultCipherSuite()
+		}
+		keys := DeriveTrafficKeys(secret, cs)
+		ks, err := NewKeySet(keys, cs.ID, true)
+		if err != nil {
+			return fmt.Errorf("crypto: failed to create write key set: %w", err)
+		}
+		if s.onWriteKeys != nil {
+			s.onWriteKeys(level, ks)
+		}
 
-		case tls.QUICWriteData:
-			level := tlsToQUICLevel(event.Level)
-			s.txCryptoData[level] = append(s.txCryptoData[level], event.Data...)
+	case tls.QUICWriteData:
+		level := tlsToQUICLevel(event.Level)
+		s.txCryptoData[level] = append(s.txCryptoData[level], event.Data...)
 
-		case tls.QUICHandshakeDone:
-			s.handshakeComplete = true
+	case tls.QUICHandshakeDone:
+		s.handshakeComplete = true
 			// For a server, handshake is confirmed when complete
 			if !s.isClient {
 				s.handshakeConfirmed = true

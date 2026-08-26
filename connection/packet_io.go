@@ -32,7 +32,9 @@ package connection
 
 import (
 	"fmt"
+	"log"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/Cabbage4/quic-go/coalesce"
@@ -70,6 +72,12 @@ type PacketIO struct {
 	// Whether we're in plaintext mode (no TLS/encryption)
 	plaintextMode bool
 
+	// Buffered packets that could not be decrypted because recv keys
+	// were not yet installed (e.g. coalesced Initial + Handshake where
+	// the Handshake packet arrives before keys are installed).
+	// These are retried after driveHandshakeLoop installs new keys.
+	bufferedPackets [][]byte
+
 	// Stats
 	packetsSent     uint64
 	packetsReceived uint64
@@ -97,11 +105,23 @@ func NewPacketIO(
 }
 
 // SetUDPConn sets the UDP socket and remote address for sending.
+// If remote is nil, the socket is assumed to be connected (created via
+// net.DialUDP) and Write is used instead of WriteToUDP.
 func (p *PacketIO) SetUDPConn(conn *net.UDPConn, remote *net.UDPAddr) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.connUDP = conn
 	p.remoteAddr = remote
+}
+
+// writeUDP sends a packet via the UDP socket. Uses Write for connected
+// sockets (created via net.DialUDP) and WriteToUDP for unconnected
+// sockets (created via net.ListenUDP).
+func (p *PacketIO) writeUDP(data []byte) (int, error) {
+	if p.remoteAddr != nil {
+		return p.connUDP.WriteToUDP(data, p.remoteAddr)
+	}
+	return p.connUDP.Write(data)
 }
 
 // SetConnIDs sets the local and remote connection IDs.
@@ -163,7 +183,7 @@ func (p *PacketIO) SendPacket(level crypto.EncryptionLevel, frs []frames.Frame) 
 		if err != nil {
 			return pn, err
 		}
-		_, err = p.connUDP.WriteToUDP(packet, p.remoteAddr)
+		_, err = p.writeUDP(packet)
 		if err != nil {
 			return pn, fmt.Errorf("connection: UDP write failed: %w", err)
 		}
@@ -193,7 +213,7 @@ func (p *PacketIO) SendPacket(level crypto.EncryptionLevel, frs []frames.Frame) 
 	}
 
 	// Send via UDP
-	_, err = p.connUDP.WriteToUDP(protected, p.remoteAddr)
+	_, err = p.writeUDP(protected)
 	if err != nil {
 		return pn, fmt.Errorf("connection: UDP write failed: %w", err)
 	}
@@ -246,6 +266,9 @@ func (p *PacketIO) buildProtectedPacket(level crypto.EncryptionLevel, pn uint64,
 	}
 
 	// Long header (Initial or Handshake)
+	// Length field must cover: PN + ciphertext (payload + AEAD tag)
+	// AEAD tag is 16 bytes for AES-128-GCM and AES-256-GCM.
+	const aeadTagLen = 16
 	pktType := header.PacketTypeInitial
 	token := []byte{}
 	if level == crypto.EncryptionHandshake {
@@ -262,6 +285,7 @@ func (p *PacketIO) buildProtectedPacket(level crypto.EncryptionLevel, pn uint64,
 		PacketNumber:    pn,
 		PacketNumberLen: pnLen,
 		Payload:         payload,
+		Length:          uint64(pnLen + len(payload) + aeadTagLen),
 	}
 	encoded, err := lh.Encode()
 	if err != nil {
@@ -277,8 +301,8 @@ func (p *PacketIO) buildProtectedPacket(level crypto.EncryptionLevel, pn uint64,
 		tl := varintLen(uint64(len(token)))
 		pnOffset += tl + len(token)
 	}
-	// Length varint
-	lengthVal := uint64(pnLen + len(payload))
+	// Length varint (use the corrected length with AEAD tag)
+	lengthVal := uint64(pnLen + len(payload) + aeadTagLen)
 	pnOffset += varintLen(lengthVal)
 
 	return encoded, pnOffset, pnLen, nil
@@ -333,7 +357,7 @@ func (p *PacketIO) SendDatagram(packets []coalesce.EncodedPacket) (int, error) {
 		return 0, nil
 	}
 
-	_, err := p.connUDP.WriteToUDP(dat, p.remoteAddr)
+	_, err := p.writeUDP(dat)
 	if err != nil {
 		return 0, fmt.Errorf("connection: UDP write failed: %w", err)
 	}
@@ -348,6 +372,12 @@ func (p *PacketIO) SendDatagram(packets []coalesce.EncodedPacket) (int, error) {
 // RecvDatagram processes a received UDP datagram.
 // It splits coalesced packets, unprotects each, decodes frames,
 // and dispatches them to the frame handler.
+//
+// For coalesced datagrams with Initial + Handshake packets, the
+// Initial packet's CRYPTO data is queued for the TLS handshake loop.
+// If the Handshake packet cannot be decrypted yet (no recv keys),
+// it is buffered and retried by RetryBufferedPackets() after the
+// driveHandshakeLoop installs the new keys.
 func (p *PacketIO) RecvDatagram(datagram []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -360,15 +390,45 @@ func (p *PacketIO) RecvDatagram(datagram []byte) error {
 		return fmt.Errorf("connection: datagram split failed: %w", err)
 	}
 
-	for _, pkt := range packets {
+	for i, pkt := range packets {
 		if derr := p.processPacket(pkt); derr != nil {
 			// Log but continue processing remaining packets
-			// In a real implementation, this would log the error
-			_ = derr
+			log.Printf("connection: processPacket error: %v", derr)
 		}
+		// Note: packets that fail decryption due to missing keys are
+		// buffered in p.bufferedPackets. They are retried by
+		// RetryBufferedPackets() after driveHandshakeLoop installs
+		// new keys (e.g., after processing ServerHello CRYPTO data).
+		_ = i
 	}
 
 	return nil
+}
+
+// RetryBufferedPackets re-attempts decryption of packets that were
+// buffered because recv keys were not yet available. This is called
+// by driveHandshakeLoop after flushing CRYPTO data and installing new
+// keys (e.g., after processing ServerHello which installs Handshake keys).
+func (p *PacketIO) RetryBufferedPackets() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.bufferedPackets) == 0 {
+		return
+	}
+
+	// Take a snapshot of buffered packets and clear the buffer.
+	// If any still fail, they'll be re-buffered.
+	pending := p.bufferedPackets
+	p.bufferedPackets = nil
+
+	for _, pkt := range pending {
+		if err := p.processPacket(pkt); err != nil {
+			// Log but continue — the packet may still fail if keys
+			// for a different level are still missing.
+			log.Printf("connection: buffered packet retry failed: %v", err)
+		}
+	}
 }
 
 // processPacket handles a single (de-coalesced) packet.
@@ -388,9 +448,26 @@ func (p *PacketIO) processPacket(pkt []byte) error {
 
 // processLongHeaderPacket handles Initial and Handshake packets.
 func (p *PacketIO) processLongHeaderPacket(pkt []byte) error {
-	lh, _, err := header.DecodeLongHeader(pkt)
+	// For protected packets, we must use DecodeLongHeaderPartial which does
+	// NOT read the masked bits (reserved bits + PN length in byte 0).
+	// The full DecodeLongHeader would fail on protected packets because:
+	//   1. Reserved bits validation fails (bits are masked)
+	//   2. PN length is wrong (bits are masked) → wrong PN, wrong payload boundary
+	isRetry := pkt[0]&0x80 != 0 && (pkt[0]>>4)&0x03 == byte(header.PacketTypeRetry)
+
+	if isRetry {
+		// Retry packets are not encrypted; use full decode
+		lh, _, err := header.DecodeLongHeader(pkt)
+		if err != nil {
+			return fmt.Errorf("connection: retry header decode failed: %w", err)
+		}
+		return p.handleRetryPacket(lh)
+	}
+
+	// Use partial decode (skips masked bits)
+	lh, _, err := header.DecodeLongHeaderPartial(pkt)
 	if err != nil {
-		return fmt.Errorf("connection: long header decode failed: %w", err)
+		return fmt.Errorf("connection: long header partial decode failed: %w", err)
 	}
 
 	// Determine encryption level from packet type
@@ -402,43 +479,56 @@ func (p *PacketIO) processLongHeaderPacket(pkt []byte) error {
 		level = crypto.EncryptionHandshake
 	case header.PacketType0RTT:
 		level = crypto.EncryptionEarly
-	case header.PacketTypeRetry:
-		// Retry packets are not encrypted; handle specially
-		return p.handleRetryPacket(lh)
 	default:
-		return fmt.Errorf("connection: unknown long header type %d", lh.Type)
+		return fmt.Errorf("connection: unexpected long header type %d", lh.Type)
 	}
 
 	// Version negotiation check
 	if lh.Version != header.Version {
-		// Handle version negotiation (simplified)
 		return fmt.Errorf("connection: unsupported version 0x%08x", lh.Version)
 	}
 
-	// Reconstruct packet number and payload
-	pn := lh.PacketNumber
-	payload := lh.Payload
+	pnOffset := lh.PNOffset
+	var pn uint64
+	var payload []byte
 
-	if !p.plaintextMode {
-		// Calculate PN offset for unprotection
-		pnOffset, pnLen := p.calcLongHeaderPNOffset(lh, pkt)
+	if p.plaintextMode {
+		// Plaintext mode: use full decode (no HP, no AEAD)
+		fullHeader, _, derr := header.DecodeLongHeader(pkt)
+		if derr != nil {
+			return fmt.Errorf("connection: plaintext long header decode failed: %w", derr)
+		}
+		pn = fullHeader.PacketNumber
+		payload = fullHeader.Payload
+	} else {
+	// Protected mode: two-phase unprotection
+	// Phase 1: Remove header protection using pnLen=4 (max) for sample.
+	// The HP sample is always at pnOffset+4 regardless of actual PN length.
+	// Phase 2: Read real pnLen from unmasked byte 0, reconstruct PN, AEAD decrypt.
+	unprotected, realPNLen, realTruncatedPN, decErr := p.unprotectLongHeader(pkt, pnOffset, level)
+	if decErr != nil {
+		// If keys are not yet available for this level, buffer the
+		// packet for later retry. The driveHandshakeLoop will call
+		// RetryBufferedPackets after installing new keys.
+		if strings.Contains(decErr.Error(), "no recv keys") {
+			p.bufferedPackets = append(p.bufferedPackets, pkt)
+			return nil
+		}
+		return fmt.Errorf("connection: packet unprotection failed: %w", decErr)
+	}
 
-		// Reconstruct full packet number from truncated value
-		fullPN := p.reconstructPN(pn, pnLen, EncryptionLevelToPNSpace(level))
+		// Reconstruct full PN
+		fullPN := p.reconstructPN(realTruncatedPN, realPNLen, EncryptionLevelToPNSpace(level))
 		pn = fullPN
 
-		// Unprotect the packet
-		unprotected, err := p.keyStore.UnprotectPacket(pkt, pnOffset, pnLen, fullPN, true, level)
-		if err != nil {
-			return fmt.Errorf("connection: packet unprotection failed: %w", err)
+		// Extract payload from unprotected packet
+		// The unprotected packet has the same header layout but with unmasked byte 0.
+		// PN is at pnOffset, length realPNLen. Payload starts at pnOffset + realPNLen.
+		payloadStart := pnOffset + realPNLen
+		if payloadStart > len(unprotected) {
+			return fmt.Errorf("connection: unprotected packet too short for payload")
 		}
-
-		// Re-decode header to get the unprotected payload
-		ulh, _, derr := header.DecodeLongHeader(unprotected)
-		if derr != nil {
-			return fmt.Errorf("connection: re-decode unprotected header: %w", derr)
-		}
-		payload = ulh.Payload
+		payload = unprotected[payloadStart:]
 	}
 
 	// Process frames in the payload
@@ -451,11 +541,6 @@ func (p *PacketIO) processLongHeaderPacket(pkt []byte) error {
 	// Record packet for ACK tracking
 	p.ackHandler.OnPacketReceived(pn, pnSpace, ackEliciting)
 
-	// Update spin bit
-	if lh.Type != header.PacketTypeRetry {
-		// Spin bit is only in short headers, but we check for completeness
-	}
-
 	// Touch activity (idle timeout)
 	p.conn.TouchActivity()
 	p.packetsReceived++
@@ -467,41 +552,61 @@ func (p *PacketIO) processLongHeaderPacket(pkt []byte) error {
 func (p *PacketIO) processShortHeaderPacket(pkt []byte) error {
 	dcidLen := len(p.localConnID)
 	if dcidLen == 0 {
-		// Try to infer DCID length from context
-		// In a real implementation, this would use the connection's known DCID length
 		return fmt.Errorf("connection: cannot decode short header without DCID length")
 	}
 
-	sh, _, err := header.DecodeShortHeader(pkt, dcidLen)
-	if err != nil {
-		return fmt.Errorf("connection: short header decode failed: %w", err)
-	}
-
-	level := crypto.EncryptionApplication
-	pn := sh.PacketNumber
-	payload := sh.Payload
-
-	if !p.plaintextMode {
-		pnOffset := 1 + dcidLen
-		pnLen := sh.PacketNumberLen
-
-		// Reconstruct full packet number
-		fullPN := p.reconstructPN(pn, pnLen, PNSpaceApplication)
-		pn = fullPN
-
-		// Unprotect the packet
-		unprotected, err := p.keyStore.UnprotectPacket(pkt, pnOffset, pnLen, fullPN, false, level)
+	if p.plaintextMode {
+		// Plaintext: use full decode
+		sh, _, err := header.DecodeShortHeader(pkt, dcidLen)
 		if err != nil {
-			return fmt.Errorf("connection: packet unprotection failed: %w", err)
+			return fmt.Errorf("connection: short header decode failed: %w", err)
 		}
-
-		// Re-decode to get unprotected payload
-		ush, _, derr := header.DecodeShortHeader(unprotected, dcidLen)
-		if derr != nil {
-			return fmt.Errorf("connection: re-decode unprotected short header: %w", derr)
+		pn := sh.PacketNumber
+		payload := sh.Payload
+		pnSpace := PNSpaceApplication
+		ackEliciting, ferr := p.frameHandler.ProcessFrames(payload, pnSpace, pn)
+		if ferr != nil {
+			return ferr
 		}
-		payload = ush.Payload
+		p.ackHandler.OnPacketReceived(pn, pnSpace, ackEliciting)
+		p.spinBit.OnPacketReceived(sh.SpinBit)
+		p.conn.TouchActivity()
+		p.packetsReceived++
+		return nil
 	}
+
+	// Protected mode: two-phase unprotection
+	// Use partial decode (skips masked bits)
+	sh, _, err := header.DecodeShortHeaderPartial(pkt, dcidLen)
+	if err != nil {
+		return fmt.Errorf("connection: short header partial decode failed: %w", err)
+	}
+
+	// PN offset for short header = 1 (first byte) + dcidLen
+	pnOffset := 1 + dcidLen
+	level := crypto.EncryptionApplication
+
+	// Two-phase unprotection
+	unprotected, realPNLen, realTruncatedPN, decErr := p.unprotectShortHeader(pkt, pnOffset, level)
+	if decErr != nil {
+		// Buffer if Application keys not yet available
+		if strings.Contains(decErr.Error(), "no recv keys") {
+			p.bufferedPackets = append(p.bufferedPackets, pkt)
+			return nil
+		}
+		return fmt.Errorf("connection: packet unprotection failed: %w", decErr)
+	}
+
+	// Reconstruct full PN
+	fullPN := p.reconstructPN(realTruncatedPN, realPNLen, PNSpaceApplication)
+	pn := fullPN
+
+	// Extract payload
+	payloadStart := pnOffset + realPNLen
+	if payloadStart > len(unprotected) {
+		return fmt.Errorf("connection: unprotected short packet too short for payload")
+	}
+	payload := unprotected[payloadStart:]
 
 	// Update spin bit
 	p.spinBit.OnPacketReceived(sh.SpinBit)
@@ -564,27 +669,141 @@ func (p *PacketIO) reconstructPN(truncatedPN uint64, pnLen int, space PNSpace) u
 	return candidatePN
 }
 
-// calcLongHeaderPNOffset calculates the PN offset and length for a long header.
-func (p *PacketIO) calcLongHeaderPNOffset(lh *header.LongHeader, pkt []byte) (pnOffset int, pnLen int) {
-	pnLen = lh.PacketNumberLen
-	if pnLen < 1 {
-		pnLen = 1
+// unprotectLongHeader performs two-phase unprotection for long header packets
+// (RFC 9001 §5.4).
+//
+// Phase 1: Remove header protection using pnLen=4 (maximum) for the sample.
+//   The HP sample is always at pnOffset+4 regardless of actual PN length.
+//   This unmasks byte 0 (reserved bits + PN length) and the PN field.
+//
+// Phase 2: Read the real pnLen from the unmasked byte 0 (bits 0-1).
+//   Read the real truncated PN using the real pnLen.
+//   AEAD decrypt using the real PN.
+//
+// Returns:
+//   - unprotected packet (header + plaintext payload)
+//   - real PN length (from unmasked byte 0)
+//   - real truncated PN value
+//   - error
+func (p *PacketIO) unprotectLongHeader(pkt []byte, pnOffset int, level crypto.EncryptionLevel) ([]byte, int, uint64, error) {
+	// Get receive keys for this level
+	ks := p.keyStore.GetKeys(level, KeyDirectionRecv)
+	if ks == nil {
+		return nil, 0, 0, fmt.Errorf("connection: no recv keys for level %s", level)
 	}
 
-	// Calculate offset: 1 (flags) + 4 (version) + 1 (dcid len) + dcid + 1 (scid len) + scid
-	pnOffset = 1 + 4 + 1 + len(lh.DestConnID) + 1 + len(lh.SrcConnID)
+	// Phase 1: Remove header protection with pnLen=4 (maximum)
+	// We use pnLen=4 because the HP sample is at pnOffset+4 regardless of actual PN length.
+	// The mask covers byte 0 (4 bits for long header) + up to 4 PN bytes.
+	// After removal, byte 0's lower bits and the PN field are unmasked.
+	pktCopy := make([]byte, len(pkt))
+	copy(pktCopy, pkt)
 
-	// Initial packets have token length + token
-	if lh.Type == header.PacketTypeInitial {
-		tl := varintLen(uint64(len(lh.Token)))
-		pnOffset += tl + len(lh.Token)
+	// Check minimum length for HP sample
+	sampleEnd := pnOffset + 4 + 16 // pnOffset + 4 (sample offset) + 16 (sample length)
+	if len(pktCopy) < sampleEnd {
+		return nil, 0, 0, fmt.Errorf("crypto: packet too short for header protection (need %d, have %d)", sampleEnd, len(pktCopy))
 	}
 
-	// Length varint
-	lengthVal := uint64(pnLen + len(lh.Payload))
-	pnOffset += varintLen(lengthVal)
+	// Remove HP using pnLen=4 (masks byte0 + 4 PN bytes, but actual PN may be shorter)
+	if err := crypto.RemoveHeaderProtection(pktCopy, pnOffset, 4, true, ks.HPKey, ks.AEAD.CipherSuiteID()); err != nil {
+		return nil, 0, 0, fmt.Errorf("crypto: header protection removal failed: %w", err)
+	}
 
-	return pnOffset, pnLen
+	// Phase 2: Read real pnLen from unmasked byte 0
+	realPNLen := int(pktCopy[0]&0x03) + 1
+
+	// Read real truncated PN
+	realTruncatedPN := readTruncatedPN(pktCopy, pnOffset, realPNLen)
+
+	// AEAD decrypt
+	// Header = everything up to pnOffset + realPNLen
+	// Ciphertext = everything after pnOffset + realPNLen
+	headerEnd := pnOffset + realPNLen
+	if headerEnd > len(pktCopy) {
+		return nil, 0, 0, fmt.Errorf("crypto: packet too short for AEAD (header ends at %d, packet is %d)", headerEnd, len(pktCopy))
+	}
+	header := pktCopy[:headerEnd]
+	ciphertext := pktCopy[headerEnd:]
+
+	plaintext, err := ks.AEAD.Decrypt(realTruncatedPN, header, ciphertext)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("crypto: AEAD decryption failed: %w", err)
+	}
+
+	// Construct unprotected packet = header + plaintext
+	unprotected := make([]byte, headerEnd+len(plaintext))
+	copy(unprotected, header)
+	copy(unprotected[headerEnd:], plaintext)
+
+	return unprotected, realPNLen, realTruncatedPN, nil
+}
+
+// unprotectShortHeader performs two-phase unprotection for short header packets
+// (RFC 9001 §5.4). Same logic as unprotectLongHeader but for short headers.
+func (p *PacketIO) unprotectShortHeader(pkt []byte, pnOffset int, level crypto.EncryptionLevel) ([]byte, int, uint64, error) {
+	// Get receive keys
+	var ks *crypto.KeySet
+	if level == crypto.EncryptionApplication {
+		ks = p.keyStore.GetKeys(level, KeyDirectionRecv)
+		if ks == nil && p.keyStore.KeyManager() != nil {
+			ks = p.keyStore.KeyManager().RxKeys()
+		}
+	} else {
+		ks = p.keyStore.GetKeys(level, KeyDirectionRecv)
+	}
+	if ks == nil {
+		return nil, 0, 0, fmt.Errorf("connection: no recv keys for level %s", level)
+	}
+
+	pktCopy := make([]byte, len(pkt))
+	copy(pktCopy, pkt)
+
+	// Check minimum length for HP sample
+	sampleEnd := pnOffset + 4 + 16
+	if len(pktCopy) < sampleEnd {
+		return nil, 0, 0, fmt.Errorf("crypto: packet too short for header protection (need %d, have %d)", sampleEnd, len(pktCopy))
+	}
+
+	// Phase 1: Remove HP with pnLen=4
+	if err := crypto.RemoveHeaderProtection(pktCopy, pnOffset, 4, false, ks.HPKey, ks.AEAD.CipherSuiteID()); err != nil {
+		return nil, 0, 0, fmt.Errorf("crypto: header protection removal failed: %w", err)
+	}
+
+	// Phase 2: Read real pnLen from unmasked byte 0
+	realPNLen := int(pktCopy[0]&0x03) + 1
+
+	// Read real truncated PN
+	realTruncatedPN := readTruncatedPN(pktCopy, pnOffset, realPNLen)
+
+	// AEAD decrypt
+	headerEnd := pnOffset + realPNLen
+	if headerEnd > len(pktCopy) {
+		return nil, 0, 0, fmt.Errorf("crypto: packet too short for AEAD")
+	}
+	header := pktCopy[:headerEnd]
+	ciphertext := pktCopy[headerEnd:]
+
+	plaintext, err := ks.AEAD.Decrypt(realTruncatedPN, header, ciphertext)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("crypto: AEAD decryption failed: %w", err)
+	}
+
+	// Construct unprotected packet
+	unprotected := make([]byte, headerEnd+len(plaintext))
+	copy(unprotected, header)
+	copy(unprotected[headerEnd:], plaintext)
+
+	return unprotected, realPNLen, realTruncatedPN, nil
+}
+
+// readTruncatedPN reads the truncated packet number from the given offset.
+func readTruncatedPN(data []byte, pnOffset, pnLen int) uint64 {
+	var pn uint64
+	for i := 0; i < pnLen; i++ {
+		pn = (pn << 8) | uint64(data[pnOffset+i])
+	}
+	return pn
 }
 
 // === Helpers ===
@@ -719,6 +938,12 @@ func (p *PacketIO) SendCryptoFrame(level crypto.EncryptionLevel, offset uint64, 
 }
 
 // FlushPendingControlFrames sends all pending control frames (ACKs, flow control, etc.)
+// and CRYPTO data for each encryption level.
+//
+// Each level's CRYPTO data is sent as a separate UDP datagram (not coalesced)
+// to avoid the timing problem where the receiver can't decrypt the Handshake
+// packet before processing the Initial CRYPTO. If the receiver still can't
+// decrypt a packet, it buffers it and retries after keys are installed.
 func (p *PacketIO) FlushPendingControlFrames() error {
 	// Generate and send control frames for each PN space that has pending data
 	for _, space := range []PNSpace{PNSpaceInitial, PNSpaceHandshake, PNSpaceApplication} {
@@ -734,17 +959,22 @@ func (p *PacketIO) FlushPendingControlFrames() error {
 		}
 	}
 
-	// Also check for pending CRYPTO data from TLS
+	// Collect and send CRYPTO data from TLS for each level as separate packets.
+	// We send Initial first, then Handshake, so the receiver processes Initial
+	// CRYPTO (installing Handshake keys) before the Handshake CRYPTO arrives.
+	// Even if the order isn't guaranteed over UDP, the receiver's packet
+	// buffering mechanism handles out-of-order arrival.
 	for _, level := range []crypto.EncryptionLevel{crypto.EncryptionInitial, crypto.EncryptionHandshake, crypto.EncryptionApplication} {
 		data := p.keyStore.GetCryptoData(level)
-		if len(data) > 0 {
-			// Send as CRYPTO frame
-			_, err := p.SendPacket(level, []frames.Frame{
-				&frames.Crypto{Offset: 0, Data: data},
-			})
-			if err != nil {
-				return fmt.Errorf("connection: failed to send CRYPTO data for %s: %w", level, err)
-			}
+		if len(data) == 0 {
+			continue
+		}
+
+		_, err := p.SendPacket(level, []frames.Frame{
+			&frames.Crypto{Offset: 0, Data: data},
+		})
+		if err != nil {
+			return fmt.Errorf("connection: failed to send CRYPTO data for %s: %w", level, err)
 		}
 	}
 

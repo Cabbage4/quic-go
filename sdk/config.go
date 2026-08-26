@@ -20,12 +20,19 @@
 //
 // The SDK uses the connection layer's PacketIO pipeline for packet
 // send/receive, FrameHandler for frame processing, and stream.Manager
-// for stream lifecycle management. In plaintext mode (default), packets
-// are not encrypted — suitable for testing and learning. In protected
-// mode, the full crypto/recovery/ack pipeline is used.
+// for stream lifecycle management.
+//
+// In plaintext mode (default, TLSMode=false), packets are not encrypted —
+// suitable for testing and learning.
+//
+// In TLS mode (TLSMode=true), the full RFC 9001 crypto pipeline is used:
+// initial key derivation from DCID, TLS 1.3 handshake via crypto/tls
+// QUICConn, AEAD packet protection + header protection, and key updates.
+// See QUICKSTART.md for a TLS quick start guide.
 package sdk
 
 import (
+	"crypto/tls"
 	"net"
 	"time"
 
@@ -62,6 +69,32 @@ type Config struct {
 	// ConnIDLength is the length of generated connection IDs.
 	// Default: 8
 	ConnIDLength int
+
+	// === TLS Configuration ===
+	//
+	// TLSMode enables TLS 1.3 encryption (RFC 9001).
+	// If false (default), the SDK operates in plaintext mode —
+	// packets are not encrypted, suitable for testing and learning.
+	// If true, the full crypto pipeline is used: initial key derivation,
+	// TLS handshake via crypto/tls QUICConn, AEAD packet protection.
+	TLSMode bool
+
+	// TLSCertificates are the TLS certificates for server-side TLS.
+	// Required for server-side TLSMode. Ignored for client-side.
+	TLSCertificates []tls.Certificate
+
+	// ALPNProtocols is the list of supported ALPN protocols.
+	// Example: []string{"h3", "hq"}.
+	ALPNProtocols []string
+
+	// ServerName is the SNI for client-side TLS.
+	// Should match the server's certificate hostname.
+	ServerName string
+
+	// InsecureSkipVerify controls whether a client verifies the server's
+	// certificate chain and host name. Only for testing — do NOT use
+	// in production.
+	InsecureSkipVerify bool
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -135,6 +168,7 @@ type Conn struct {
 	recovery   *connection.RecoveryManager
 	ackHandler  *connection.AckHandler
 	streamMgr  *stream.Manager
+	coordinator *connection.Coordinator
 
 	// Pending frames to send
 	sendQueue chan []byte

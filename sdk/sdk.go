@@ -3,12 +3,14 @@ package sdk
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"time"
 
 	"github.com/Cabbage4/quic-go/connection"
 	"github.com/Cabbage4/quic-go/crypto"
+	"github.com/Cabbage4/quic-go/frames"
 	"github.com/Cabbage4/quic-go/header"
 	"github.com/Cabbage4/quic-go/stream"
 	"github.com/Cabbage4/quic-go/transport"
@@ -118,8 +120,10 @@ func (l *Listener) handlePacket(data []byte, raddr *net.UDPAddr) {
 	var dcid []byte
 
 	if isLongHeader {
-		// Parse long header to get DCID
-		hdr, _, err := header.DecodeLongHeader(data)
+		// Parse long header to get DCID — use partial decode because
+		// protected packets have masked reserved bits that would cause
+		// DecodeLongHeader to fail.
+		hdr, _, err := header.DecodeLongHeaderPartial(data)
 		if err != nil {
 			return
 		}
@@ -155,7 +159,8 @@ func (l *Listener) handlePacket(data []byte, raddr *net.UDPAddr) {
 
 	// New connection from Initial packet
 	if isLongHeader {
-		hdr, _, err := header.DecodeLongHeader(data)
+		// Use partial decode — protected packets have masked bits
+		hdr, _, err := header.DecodeLongHeaderPartial(data)
 		if err != nil {
 			return
 		}
@@ -205,7 +210,12 @@ func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, radd
 	}
 
 	// Initialize subsystems
-	c.initSubsystems(true, tp)
+	c.initSubsystems(true, tp, hdr.DestConnID)
+
+	// In TLS mode, set certificates in the TLS config
+	if l.config.TLSMode && c.keyStore != nil {
+		c.applyTLSConfig()
+	}
 
 	// Add to connection table
 	dcidKey := string(hdr.DestConnID)
@@ -231,8 +241,19 @@ func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, radd
 	// Process the initial packet
 	c.handleIncoming(data, raddr, true)
 
-	// Send a server response: Initial packet with PING + HANDSHAKE_DONE
-	c.sendServerInitial()
+	// In TLS mode, drive the handshake (server side)
+	if l.config.TLSMode {
+		go c.driveHandshakeLoop()
+	}
+
+	// Send server response
+	if l.config.TLSMode {
+		// TLS mode: let PacketIO handle the encrypted Initial response
+		// The driveHandshakeLoop will flush pending CRYPTO data
+	} else {
+		// Plaintext mode: send PING + HANDSHAKE_DONE directly
+		c.sendServerInitial()
+	}
 
 	// Notify Accept()
 	select {
@@ -268,9 +289,10 @@ func (c *Conn) sendServerInitial() {
 
 // initSubsystems creates and wires the connection-layer subsystems:
 // KeySetStore, AckHandler, RecoveryManager, FrameHandler, stream.Manager,
-// and PacketIO. In plaintext mode, encryption is skipped.
-func (c *Conn) initSubsystems(isServer bool, tp transport.Params) {
-	// Create key store (for future TLS integration)
+// PacketIO, and Coordinator. In plaintext mode, encryption is skipped.
+// In TLS mode, initial keys are derived and a TLS session is started.
+func (c *Conn) initSubsystems(isServer bool, tp transport.Params, initialDCID []byte) {
+	// Create key store
 	c.keyStore = connection.NewKeySetStore()
 
 	// Create ACK handler
@@ -303,6 +325,11 @@ func (c *Conn) initSubsystems(isServer bool, tp transport.Params) {
 		c.keyStore,
 	)
 
+	// Create coordinator
+	c.coordinator = connection.NewCoordinator(
+		c.conn, c.keyStore, c.frameHandler, c.recovery, c.ackHandler,
+	)
+
 	// Create packet I/O pipeline
 	c.packetIO = connection.NewPacketIO(
 		c.conn,
@@ -313,7 +340,12 @@ func (c *Conn) initSubsystems(isServer bool, tp transport.Params) {
 	)
 	c.packetIO.SetUDPConn(c.udpConn, c.remoteAddr)
 	c.packetIO.SetConnIDs(c.connMgr.SrcConnID(), c.connMgr.DestConnID())
-	c.packetIO.SetPlaintextMode(true) // SDK uses plaintext mode for now
+
+	// For client (connected socket via net.DialUDP), use nil remoteAddr
+	// so PacketIO uses Write() instead of WriteToUDP().
+	if !c.isServer {
+		c.packetIO.SetUDPConn(c.udpConn, nil)
+	}
 
 	// Set up key discard callback to discard PN space
 	c.keyStore.SetDiscardCallback(func(level crypto.EncryptionLevel) {
@@ -322,6 +354,113 @@ func (c *Conn) initSubsystems(isServer bool, tp transport.Params) {
 		c.recovery.OnPacketNumberSpaceDiscarded(pnSpace)
 		c.frameHandler.CleanUpSentFrames(pnSpace)
 	})
+
+	// Configure encryption mode
+	if c.config.TLSMode {
+		// TLS mode: derive initial keys and start TLS session
+		c.coordinator.SetPlaintextMode(false)
+		c.packetIO.SetPlaintextMode(false)
+
+		// Derive initial keys from the initial DCID
+		if err := c.keyStore.DeriveInitialKeys(initialDCID, isServer); err != nil {
+			log.Printf("quic: failed to derive initial keys: %v", err)
+		}
+
+		// Encode transport parameters for TLS
+		tpBytes, err := connection.TransportParamsToBytes(&tp)
+		if err != nil {
+			log.Printf("quic: failed to encode transport params: %v", err)
+			tpBytes = nil
+		}
+
+	// Start TLS session — key callbacks auto-install keys into KeySetStore
+	err = c.keyStore.StartTLS(
+		!isServer, // isClient
+		tpBytes,
+		c.config.ALPNProtocols,
+		c.config.ServerName,
+		c.config.TLSCertificates,
+		c.config.InsecureSkipVerify,
+		func(peerParams []byte) {
+			// Peer's transport parameters received via TLS
+			// FrameHandler will apply them
+		},
+	)
+		if err != nil {
+			log.Printf("quic: failed to start TLS: %v", err)
+		}
+	} else {
+		// Plaintext mode: no encryption
+		c.coordinator.SetPlaintextMode(true)
+		c.packetIO.SetPlaintextMode(true)
+	}
+}
+
+// applyTLSConfig applies TLS certificates to the TLS session.
+// For server-side: sets certificates for the server's TLS config.
+// For client-side: sets InsecureSkipVerify and root CAs if configured.
+func (c *Conn) applyTLSConfig() {
+	session := c.keyStore.TLSSession()
+	if session == nil {
+		return
+	}
+	// The TLS config (certificates, ALPN, ServerName) is already set
+	// via keyStore.StartTLS(). This method can be extended for
+	// certificate rotation, client auth, etc.
+}
+
+// driveHandshakeLoop runs the TLS handshake to completion.
+// It repeatedly calls coordinator.DriveHandshake() and flushes
+// pending CRYPTO data via PacketIO until the handshake is complete.
+// After the handshake, the connection transitions to StateEstablished.
+func (c *Conn) driveHandshakeLoop() {
+	// Drive TLS handshake — this produces ClientHello/ServerHello CRYPTO
+	// data which PacketIO.FlushPendingControlFrames() will send.
+	for {
+		select {
+		case <-c.closeCh:
+			return
+		default:
+		}
+
+		// Check if handshake is complete
+		session := c.keyStore.TLSSession()
+		if session != nil && session.HandshakeComplete() {
+			// Handshake complete — flush any remaining CRYPTO data.
+			if err := c.packetIO.FlushPendingControlFrames(); err != nil {
+				log.Printf("quic: flush after handshake: %v", err)
+			}
+			// Retry any buffered packets that may have been waiting for keys
+			c.packetIO.RetryBufferedPackets()
+			return
+		}
+
+		// Feed any queued CRYPTO data from received packets to TLS,
+		// then drive the TLS handshake forward (Start/processEvents).
+		// This must happen in the same goroutine to avoid deadlock
+		// with the TLS session mutex.
+		if err := c.frameHandler.FlushPendingCryptoData(); err != nil {
+			log.Printf("quic: flush crypto data: %v", err)
+		}
+
+		// Drive the TLS handshake forward
+		if err := c.coordinator.DriveHandshake(); err != nil {
+			log.Printf("quic: handshake error: %v", err)
+			return
+		}
+
+		// Flush pending CRYPTO data and control frames
+		if err := c.packetIO.FlushPendingControlFrames(); err != nil {
+			log.Printf("quic: flush control frames: %v", err)
+		}
+
+		// Retry buffered packets that may now have keys available
+		// (e.g., after processing ServerHello which installed Handshake keys)
+		c.packetIO.RetryBufferedPackets()
+
+		// Small delay to avoid busy-looping before more CRYPTO data arrives
+		time.Sleep(1 * time.Millisecond)
+	}
 }
 
 // === Dialer (Client) ===
@@ -379,12 +518,22 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 	}
 
 	// Initialize subsystems
-	c.initSubsystems(false, config.toTransportParams())
+	c.initSubsystems(false, config.toTransportParams(), initialDCID)
+
+	// In TLS mode, set certificates in the TLS config
+	if config.TLSMode && c.keyStore != nil {
+		c.applyTLSConfig()
+	}
 
 	// Send Initial packet
 	if err := c.sendInitial(srcCID, initialDCID); err != nil {
 		udpConn.Close()
 		return nil, fmt.Errorf("sdk: send initial: %w", err)
+	}
+
+	// In TLS mode, drive the handshake
+	if config.TLSMode {
+		go c.driveHandshakeLoop()
 	}
 
 	// Start receiving
@@ -399,15 +548,62 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 		conn.StartIdleTimer()
 	}
 
+	// In TLS mode, wait for the handshake to complete before returning
+	if config.TLSMode {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			session := c.keyStore.TLSSession()
+			if session != nil && session.HandshakeComplete() {
+				break
+			}
+			if time.Now().After(deadline) {
+				udpConn.Close()
+				return nil, fmt.Errorf("sdk: TLS handshake timed out")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
 	return c, nil
 }
 
 // sendInitial builds and sends an Initial packet.
 func (c *Conn) sendInitial(srcCID, destCID []byte) error {
-	// Build a minimal Initial packet with a PING frame
+	if c.config.TLSMode {
+		// TLS mode: the driveHandshakeLoop will start TLS and send
+		// the ClientHello as CRYPTO data via PacketIO. We just need
+		// to send a minimal Initial PING to elicit a server response.
+		// The actual CRYPTO data (ClientHello) will be sent by
+		// FlushPendingControlFrames after DriveHandshake produces it.
+		pingFrame := []byte{0x01} // PING
+		pn := c.conn.NextPacketNumber(connection.PNSpaceInitial)
+		_, err := c.packetIO.SendPacket(crypto.EncryptionInitial, nil)
+		// Send PING via the protected path
+		if err != nil {
+			// Fallback: send unprotected if SendPacket fails
+			hdr := &header.LongHeader{
+				Type:            header.PacketTypeInitial,
+				Version:         header.Version,
+				DestConnID:      destCID,
+				SrcConnID:       srcCID,
+				Token:           nil,
+				PacketNumber:    pn,
+				PacketNumberLen: 4,
+				Payload:         pingFrame,
+			}
+			packet, eerr := hdr.Encode()
+			if eerr != nil {
+				return eerr
+			}
+			_, err = c.udpConn.Write(packet)
+			return err
+		}
+		return nil
+	}
+
+	// Plaintext mode: build a minimal Initial packet with a PING frame
 	pingFrame := []byte{0x01} // PING frame type
 
-	// Build the Initial packet header
 	pn := c.conn.NextPacketNumber(connection.PNSpaceInitial)
 
 	hdr := &header.LongHeader{
@@ -483,6 +679,33 @@ func (c *Conn) sendLoop() {
 // handleIncoming processes a received packet.
 func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool) {
 	c.conn.TouchActivity()
+
+	// In TLS mode, route through PacketIO for decryption
+	if c.config.TLSMode && c.packetIO != nil {
+		// For long headers: extract SCID before decryption to update DCID
+		if isLongHeader && !c.isServer {
+			// Use partial decode — the full DecodeLongHeader would fail
+			// on protected packets because reserved bits are masked.
+			hdr, _, err := header.DecodeLongHeaderPartial(data)
+			if err == nil && len(hdr.SrcConnID) > 0 {
+				c.connMgr.InitDestConnID(hdr.SrcConnID)
+				c.packetIO.SetConnIDs(c.connMgr.SrcConnID(), c.connMgr.DestConnID())
+			}
+		}
+		// RecvDatagram handles: split, unprotect, decode, dispatch frames,
+		// record for ACK, update recovery, touch activity.
+		// It also flushes CRYPTO data between coalesced packets.
+		if err := c.packetIO.RecvDatagram(data); err != nil {
+			log.Printf("quic: packet receive error: %v", err)
+		}
+		// Do NOT call flushPendingControlFrames() here — it would
+		// deadlock with driveHandshakeLoop's HandleCryptoData which
+		// holds the TLS session mutex. The driveHandshakeLoop handles
+		// flushing control frames and CRYPTO data.
+		// Deliver any received stream data to SDK-level Stream wrappers
+		c.deliverReceivedStreamData()
+		return
+	}
 
 	if isLongHeader {
 		hdr, _, err := header.DecodeLongHeader(data)
@@ -1015,9 +1238,30 @@ func (s *Stream) Write(data []byte) (int, error) {
 		return 0, nil
 	}
 
-	// Build STREAM frame
-	// Frame type: 0b00001_1_1_1 = 0x0f (FIN=0, Offset=1, Len=1)
-	// We set: OFF bit (0x04), LEN bit (0x02), but not FIN
+	// In TLS mode, send through PacketIO for encryption at Application level
+	if s.conn.config.TLSMode && s.conn.packetIO != nil {
+		// Wait for handshake to complete before sending application data
+		session := s.conn.keyStore.TLSSession()
+		if session != nil && !session.HandshakeComplete() {
+			return 0, fmt.Errorf("sdk: handshake not complete")
+		}
+
+		frame := &frames.Stream{
+			StreamID: s.id,
+			Offset:   s.writeOffset,
+			Data:     data,
+			Fin:      false,
+		}
+		_, err := s.conn.packetIO.SendPacket(crypto.EncryptionApplication,
+			[]frames.Frame{frame})
+		if err != nil {
+			return 0, err
+		}
+		s.writeOffset += uint64(len(data))
+		return len(data), nil
+	}
+
+	// Plaintext mode: build STREAM frame manually and wrap in short header
 	frameType := byte(0x08 | 0x04 | 0x02) // STREAM with OFF and LEN, no FIN
 
 	buf := []byte{frameType}
@@ -1116,7 +1360,7 @@ func (s *Stream) Read(p []byte) (int, error) {
 	case data, ok := <-s.readCh:
 		if !ok || data == nil {
 			// EOF
-			return 0, fmt.Errorf("EOF")
+			return 0, io.EOF
 		}
 		n := copy(p, data)
 		if n < len(data) {
@@ -1125,7 +1369,7 @@ func (s *Stream) Read(p []byte) (int, error) {
 		}
 		return n, nil
 	case <-s.closeCh:
-		return 0, fmt.Errorf("stream closed")
+		return 0, io.EOF
 	}
 }
 

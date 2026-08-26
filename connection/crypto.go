@@ -16,6 +16,7 @@ package connection
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"sync"
 	"time"
@@ -283,6 +284,8 @@ func (s *KeySetStore) StartTLS(
 	transportParams []byte,
 	alpnProtocols []string,
 	serverName string,
+	certificates []tls.Certificate,
+	insecureSkipVerify bool,
 	onTransportParams func([]byte),
 ) error {
 	s.mu.Lock()
@@ -293,6 +296,8 @@ func (s *KeySetStore) StartTLS(
 		TransportParameters: transportParams,
 		ALPNProtocols:       alpnProtocols,
 		ServerName:          serverName,
+		Certificates:        certificates,
+		InsecureSkipVerify:  insecureSkipVerify,
 	}
 
 	session, err := crypto.NewTLSSession(tlsConfig)

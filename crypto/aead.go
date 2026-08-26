@@ -288,6 +288,12 @@ func ProtectPayload(packet []byte, pnOffset, pnLen int, packetNumber uint64, isL
 //   - isLongHeader: true for long headers, false for short headers
 //
 // Returns the unprotected packet (header + plaintext payload).
+//
+// Note: For correctness, the caller should first call RemoveHeaderProtection,
+// then read the real truncated PN from the unmasked header, reconstruct the
+// full PN, then pass it here. If packetNumber is derived from the protected
+// header (before unmasking), AEAD decryption will fail. The recommended
+// pattern is to use UnprotectPayloadWithReconstruct instead.
 func UnprotectPayload(packet []byte, pnOffset, pnLen int, packetNumber uint64, isLongHeader bool, ks *KeySet) ([]byte, error) {
 	if ks == nil || ks.AEAD == nil {
 		return nil, errors.New("crypto: nil key set")
@@ -302,11 +308,14 @@ func UnprotectPayload(packet []byte, pnOffset, pnLen int, packetNumber uint64, i
 		return nil, fmt.Errorf("crypto: header protection removal failed: %w", err)
 	}
 
-	// Step 2: AEAD decrypt the payload
+	// Step 2: Read the real (unmasked) truncated PN from the header
+	realTruncatedPN := readTruncatedPN(protected, pnOffset, pnLen)
+
+	// Step 3: AEAD decrypt using the real PN
 	header := protected[:pnOffset+pnLen]
 	ciphertext := protected[pnOffset+pnLen:]
 
-	plaintext, err := ks.AEAD.Decrypt(packetNumber, header, ciphertext)
+	plaintext, err := ks.AEAD.Decrypt(realTruncatedPN, header, ciphertext)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: AEAD decryption failed: %w", err)
 	}
@@ -317,4 +326,13 @@ func UnprotectPayload(packet []byte, pnOffset, pnLen int, packetNumber uint64, i
 	copy(unprotected[len(header):], plaintext)
 
 	return unprotected, nil
+}
+
+// readTruncatedPN reads the truncated packet number from the given offset.
+func readTruncatedPN(data []byte, pnOffset, pnLen int) uint64 {
+	var pn uint64
+	for i := 0; i < pnLen; i++ {
+		pn = (pn << 8) | uint64(data[pnOffset+i])
+	}
+	return pn
 }
