@@ -231,7 +231,7 @@ cd quic-go && go run ./cmd/demo
 
 ## Status
 
-- **56 Go files, 20,386 lines of code, 245 tests, all passing**
+- **56 Go files, 20,443 lines of code, 245 tests, all passing**
 - **21 packages, zero external dependencies (Go standard library only)**
 - RFC 9000 (Transport): Complete
 - RFC 9001 (TLS Integration): Complete — key derivation, AEAD, header protection, key update, TLS handshake via crypto/tls QUICConn

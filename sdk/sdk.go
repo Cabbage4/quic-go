@@ -3,6 +3,7 @@ package sdk
 import (
 	"crypto/rand"
 	"fmt"
+	"log"
 	"net"
 	"time"
 
@@ -509,7 +510,10 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 		}
 
 		if len(hdr.Payload) > 0 {
-			c.frameHandler.ProcessFrames(hdr.Payload, pnSpace, hdr.PacketNumber)
+			_, ferr := c.frameHandler.ProcessFrames(hdr.Payload, pnSpace, hdr.PacketNumber)
+			if ferr != nil {
+				log.Printf("quic: frame processing error (long header, pn=%d): %v", hdr.PacketNumber, ferr)
+			}
 			c.ackHandler.OnPacketReceived(hdr.PacketNumber, pnSpace, true)
 		}
 
@@ -531,7 +535,10 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 			return
 		}
 		if len(hdr.Payload) > 0 {
-			c.frameHandler.ProcessFrames(hdr.Payload, connection.PNSpaceApplication, hdr.PacketNumber)
+			_, ferr := c.frameHandler.ProcessFrames(hdr.Payload, connection.PNSpaceApplication, hdr.PacketNumber)
+			if ferr != nil {
+				log.Printf("quic: frame processing error (short header, pn=%d): %v", hdr.PacketNumber, ferr)
+			}
 			c.ackHandler.OnPacketReceived(hdr.PacketNumber, connection.PNSpaceApplication, true)
 		}
 

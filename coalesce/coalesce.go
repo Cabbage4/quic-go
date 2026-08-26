@@ -12,7 +12,6 @@ package coalesce
 import (
 	"fmt"
 
-	"github.com/Cabbage4/quic-go/header"
 	"github.com/Cabbage4/quic-go/varint"
 )
 
@@ -312,5 +311,3 @@ func CountPackets(datagram []byte) (int, error) {
 	return len(packets), nil
 }
 
-// Reference to header package for potential future use.
-var _ = header.Version

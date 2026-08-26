@@ -719,6 +719,25 @@ func (m *Manager) UpdateConnMaxData(maxData uint64) {
 	}
 }
 
+// UpdateMaxStreams updates the maximum number of streams the peer permits
+// us to open (from a received MAX_STREAMS frame, RFC 9000 §19.5).
+// If the new limit is larger, it raises the cap; if smaller, it is ignored
+// (RFC 9000 §4.6: "A MAX_STREAMS frame ... cannot reduce the maximum ...
+// below the value ... already opened").
+func (m *Manager) UpdateMaxStreams(maxStreams uint64, bidi bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if bidi {
+		if maxStreams > m.maxStreamsBidi {
+			m.maxStreamsBidi = maxStreams
+		}
+	} else {
+		if maxStreams > m.maxStreamsUni {
+			m.maxStreamsUni = maxStreams
+		}
+	}
+}
+
 // ConnDataSent returns total data sent on the connection.
 func (m *Manager) ConnDataSent() uint64 {
 	m.mu.Lock()

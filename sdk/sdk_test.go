@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"testing"
 	"time"
@@ -473,5 +472,3 @@ func TestNetMutex(t *testing.T) {
 	m.Unlock()
 }
 
-// Ensure io is used (for future Read/Write interface compliance)
-var _ = io.EOF

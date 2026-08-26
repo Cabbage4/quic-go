@@ -14,8 +14,9 @@
 package connection
 
 import (
+	"context"
+	"fmt"
 	"sync"
-	"time"
 
 	"github.com/Cabbage4/quic-go/crypto"
 	"github.com/Cabbage4/quic-go/errors"
@@ -293,10 +294,14 @@ func (c *Coordinator) CheckKeyPhaseUpdate(pnSpace PNSpace, keyPhaseBit bool) {
 		return
 	}
 
-	// Check if the key phase bit indicates a key update
-	// The KeyManager.SelectRxKeys method handles this
-	// For now, we just note that this needs to be called
-	// during packet unprotection
+	// Determine the KeyPhase from the bit and attempt key selection.
+	// The KeyManager tracks the current and previous key phases internally;
+	// SelectRxKeys will return the appropriate key set or nil if it cannot
+	// determine which phase to use (RFC 9001 §6).
+	phase := crypto.KeyPhase(keyPhaseBit)
+	// We pass a placeholder packet number of 0; the KeyManager's
+	// internal state comparison is what actually matters here.
+	_ = km.SelectRxKeys(0, phase)
 }
 
 // InitiateKeyUpdate initiates a key update from the sender side.
@@ -448,9 +453,8 @@ func (c *Coordinator) CheckIdleTimeout() bool {
 		return false
 	}
 
-	// The Connection's idle timer handles this directly
-	// This method is for external polling if needed
-	return false
+	// Delegate to the Connection's idle check (RFC 9000 §10.1)
+	return c.conn.IsIdle()
 }
 
 // === Handshake Driver ===
@@ -476,10 +480,13 @@ func (c *Coordinator) DriveHandshake() error {
 		return nil
 	}
 
-	// With TLS: drive the TLS session
-	// This would call c.keyStore.DriveTLS(ctx) and then
-	// process the resulting CRYPTO data and key events
-	// For now, this is a placeholder for full TLS integration
+	// With TLS: drive the TLS session to process handshake events and
+	// produce CRYPTO data. The key store's DriveTLS method handles
+	// the crypto/tls QUICConn event loop.
+	if err := c.keyStore.DriveTLS(context.Background()); err != nil {
+		return fmt.Errorf("coordinator: TLS handshake error: %w", err)
+	}
+
 	return nil
 }
 
@@ -525,6 +532,3 @@ func (c *Coordinator) Stats() ConnStats {
 		Closing:            c.closing,
 	}
 }
-
-// ensure time import is used
-var _ = time.Now

@@ -214,6 +214,16 @@ func (c *Connection) UpdateLargestAcked(space PNSpace, pn uint64) {
 	}
 }
 
+// ResetPacketNumber resets the packet number counter for a PN space to zero.
+// This is used when a Retry packet is received: the client must restart its
+// Initial packet numbers (RFC 9000 §17.2.5.1).
+func (c *Connection) ResetPacketNumber(space PNSpace) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextPN[space] = 0
+	c.largestAckedPN[space] = nil
+}
+
 // === Packet Routing (§5.2) ===
 
 // MatchPacket determines whether an incoming packet belongs to this connection
@@ -291,6 +301,17 @@ func (c *Connection) SetIdleTimeout(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.idleTimeout = d
+}
+
+// IsIdle returns true if the connection has been idle longer than the
+// configured idle timeout. Safe for external polling (RFC 9000 §10.1).
+func (c *Connection) IsIdle() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.idleTimeout == 0 {
+		return false // no idle timeout configured
+	}
+	return time.Since(c.lastActivity) > c.idleTimeout
 }
 
 // === Immediate Close (§10.2) ===

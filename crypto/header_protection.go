@@ -14,7 +14,6 @@ package crypto
 
 import (
 	"crypto/aes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -231,5 +230,3 @@ func MinimumPacketLen(pnOffset int) int {
 	return pnOffset + 4 + HeaderProtectionSampleLen
 }
 
-// binaryOrder is used for internal byte ordering utilities.
-var _ = binary.BigEndian

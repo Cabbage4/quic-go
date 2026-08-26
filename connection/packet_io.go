@@ -34,14 +34,12 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/Cabbage4/quic-go/coalesce"
 	"github.com/Cabbage4/quic-go/crypto"
 	"github.com/Cabbage4/quic-go/errors"
 	"github.com/Cabbage4/quic-go/frames"
 	"github.com/Cabbage4/quic-go/header"
-	"github.com/Cabbage4/quic-go/varint"
 )
 
 // PacketIO manages the complete packet send/receive pipeline.
@@ -526,10 +524,21 @@ func (p *PacketIO) processShortHeaderPacket(pkt []byte) error {
 }
 
 // handleRetryPacket processes a Retry packet (RFC 9000 §17.2.5).
+// The client must switch to using the Retry's Source Connection ID as the
+// destination connection ID for all subsequent Initial packets it sends.
 func (p *PacketIO) handleRetryPacket(lh *header.LongHeader) error {
-	// Retry packets are used for address validation by the server.
-	// The client should switch to using the Retry Source Connection ID.
-	// For now, just record that we received a retry.
+	// Switch the remote connection ID to the Retry's Source Connection ID.
+	// This is the core behavior: the server's Retry picks a new SCID, and
+	// the client must use it as the DCID for subsequent Initial packets.
+	if len(lh.SrcConnID) > 0 {
+		p.remoteConnID = make([]byte, len(lh.SrcConnID))
+		copy(p.remoteConnID, lh.SrcConnID)
+	}
+
+	// Reset the packet number for Initial space since we're restarting
+	// the handshake with the new connection ID.
+	p.conn.ResetPacketNumber(PNSpaceInitial)
+
 	return nil
 }
 
@@ -751,7 +760,3 @@ func (p *PacketIO) Close() {
 		p.connUDP.Close()
 	}
 }
-
-// ensure varint import is used
-var _ = varint.Decode
-var _ = time.Now
