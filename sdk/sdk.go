@@ -1293,6 +1293,30 @@ func (c *Conn) LocalAddr() net.Addr {
 // === Stream Methods ===
 
 // Write writes data to the stream, sending it in STREAM frames.
+// maxStreamPayloadPerPacket caps how much stream data is carried in a single
+// QUIC packet. QUIC packets must fit in one UDP datagram and stay under the
+// path MTU to avoid IP fragmentation; without this cap, Stream.Write would
+// wrap an arbitrarily large buffer in a single STREAM frame / single packet,
+// producing an oversized UDP datagram that the kernel drops on send (EMSGSIZE)
+// or on receive — observed as bulk transfers silently making no progress.
+//
+// 1100 is a conservative safe QUIC initial PMTU (fits within a 1280-byte IPv6
+// minimum MTU with headroom for the short header, STREAM frame header, and
+// AEAD tag). A production deployment should negotiate PMTU (DPLPMTUD) and may
+// raise this toward the discovered path MTU.
+const maxStreamPayloadPerPacket = 1100
+
+// mustVarint encodes v as a varint, panicking only if v exceeds the 62-bit
+// varint range — which cannot happen for stream IDs / offsets / lengths in
+// any realistic use. It keeps STREAM-frame construction terse.
+func mustVarint(v uint64) []byte {
+	b, err := varint.Encode(v)
+	if err != nil {
+		panic(fmt.Sprintf("sdk: varint encode %d: %v", v, err))
+	}
+	return b
+}
+
 func (s *Stream) Write(data []byte) (int, error) {
 	if s.writeClosed {
 		return 0, fmt.Errorf("stream closed for writing")
@@ -1302,68 +1326,85 @@ func (s *Stream) Write(data []byte) (int, error) {
 		return 0, nil
 	}
 
-	// In TLS mode, send through PacketIO for encryption at Application level
+	// In TLS mode, application data must wait for handshake completion.
 	if s.conn.config.TLSMode && s.conn.packetIO != nil {
-		// Wait for handshake to complete before sending application data
 		select {
 		case <-s.conn.handshakeDone:
 		case <-s.conn.closeCh:
 			return 0, fmt.Errorf("sdk: connection closed")
 		}
+	}
 
+	// Chunk the payload so each STREAM frame fits in one (sub-MTU) packet.
+	// s.sendOneStreamFrame advances s.writeOffset by the bytes it actually
+	// sends and returns the count, so we loop until all of `data` is sent.
+	total := 0
+	for total < len(data) {
+		end := total + maxStreamPayloadPerPacket
+		if end > len(data) {
+			end = len(data)
+		}
+		n, err := s.sendOneStreamFrame(data[total:end])
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			// Should not happen for a non-empty chunk, but guard against a
+			// busy-loop if it ever does.
+			return total, fmt.Errorf("sdk: stream write stalled at %d/%d", total, len(data))
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// sendOneStreamFrame emits a single STREAM frame carrying `data` (which must be
+// <= maxStreamPayloadPerPacket) at the current s.writeOffset, advances the
+// offset, and returns the number of stream bytes sent. TLS mode routes
+// through PacketIO.SendPacket (for AEAD protection); plaintext mode builds a
+// short-header packet and queues it on the connection's send loop.
+func (s *Stream) sendOneStreamFrame(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	// TLS mode: STREAM frame via the encrypted packet pipeline.
+	if s.conn.config.TLSMode && s.conn.packetIO != nil {
 		frame := &frames.Stream{
 			StreamID: s.id,
 			Offset:   s.writeOffset,
 			Data:     data,
 			Fin:      false,
 		}
-		_, err := s.conn.packetIO.SendPacket(crypto.EncryptionApplication,
-			[]frames.Frame{frame})
-		if err != nil {
+		if _, err := s.conn.packetIO.SendPacket(crypto.EncryptionApplication,
+			[]frames.Frame{frame}); err != nil {
 			return 0, err
 		}
 		s.writeOffset += uint64(len(data))
 		return len(data), nil
 	}
 
-	// Plaintext mode: build STREAM frame manually and wrap in short header
-	frameType := byte(0x08 | 0x04 | 0x02) // STREAM with OFF and LEN, no FIN
-
+	// Plaintext mode: STREAM frame (OFF+LEN, no FIN) wrapped in a short header.
+	frameType := byte(0x08 | 0x04 | 0x02)
 	buf := []byte{frameType}
-
-	// Stream ID (varint)
-	sidBytes, _ := varint.Encode(s.id)
-	buf = append(buf, sidBytes...)
-
-	// Offset (varint)
-	offBytes, _ := varint.Encode(s.writeOffset)
-	buf = append(buf, offBytes...)
-
-	// Length (varint)
-	lenBytes, _ := varint.Encode(uint64(len(data)))
-	buf = append(buf, lenBytes...)
-
-	// Data
+	buf = append(buf, mustVarint(s.id)...)
+	buf = append(buf, mustVarint(s.writeOffset)...)
+	buf = append(buf, mustVarint(uint64(len(data)))...)
 	buf = append(buf, data...)
 
-	// Wrap in a short header packet
 	pn := s.conn.conn.NextPacketNumber(connection.PNSpaceApplication)
-
 	hdr := &header.ShortHeader{
 		DestConnID:      s.conn.connMgr.DestConnID(),
 		PacketNumber:    pn,
 		PacketNumberLen: 4,
 		Payload:         buf,
 	}
-
 	packet, err := hdr.Encode()
 	if err != nil {
 		return 0, err
 	}
-
 	s.conn.sendQueue <- packet
 	s.writeOffset += uint64(len(data))
-
 	return len(data), nil
 }
 
