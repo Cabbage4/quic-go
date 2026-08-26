@@ -10,7 +10,6 @@ package recovery
 
 import (
 	"math"
-	"sort"
 	"sync"
 	"time"
 )
@@ -394,23 +393,23 @@ func (ld *LossDetection) detectAndRemoveLostPackets(pnSpace PacketNumberSpace, n
 
 	var lostPackets []*SentPacket
 
-	// Collect unacked packets sorted by packet number
-	var unacked []*SentPacket
+	// Scan sentPackets once, in place. The previous implementation collected
+	// ALL unacked packets with PN <= largestAcked into a slice, SORTED it, then
+	// iterated — O(N log N) per ACK with N = in-flight packet count. Under a
+	// bulk transfer (thousands of in-flight packets) this pegged the server's
+	// recvLoop and stalled the whole connection (the bulk "flaky stall": both
+	// sides idle/blocked while the server burned CPU sorting).
+	//
+	// The sort was only for ordered processing; loss detection is correct
+	// per-packet (each packet is judged independently against lostSendTime /
+	// kPacketThreshold), so we drop the sort and the intermediate slice and
+	// judge each packet directly during the single map scan.
 	for _, p := range ld.sentPackets[spaceIdx] {
-		if p.PacketNumber <= ld.largestAcked[spaceIdx] {
-			unacked = append(unacked, p)
-		}
-	}
-	sort.Slice(unacked, func(i, j int) bool {
-		return unacked[i].PacketNumber < unacked[j].PacketNumber
-	})
-
-	for _, p := range unacked {
 		if p.PacketNumber > ld.largestAcked[spaceIdx] {
 			continue
 		}
 
-		// Mark as lost if sent before lost_send_time, or
+		// Mark as lost if sent before/at lost_send_time, or
 		// if >= kPacketThreshold packets have been acknowledged after it
 		if p.TimeSent.Before(lostSendTime) || p.TimeSent.Equal(lostSendTime) ||
 			ld.largestAcked[spaceIdx] >= p.PacketNumber+kPacketThreshold {

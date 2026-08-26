@@ -253,6 +253,31 @@ func (s *Stream) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// PushBack pushes data that was previously read back to the front of the
+// receive buffer, so a subsequent Read returns it again. It reverses the
+// offset/consumed bookkeeping that Read advanced. This is used by the SDK's
+// deliverReceivedStreamData when it Read some bytes from the manager stream
+// but then could not queue them on the stream's readCh (channel full) and
+// must not lose them — putting them back lets the next delivery pass re-read.
+//
+// p must be exactly the slice (or equivalent bytes) most recently returned by
+// Read; calling PushBack with arbitrary data will corrupt stream ordering.
+func (s *Stream) PushBack(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	s.recv.mu.Lock()
+	defer s.recv.mu.Unlock()
+	// Prepend to recvBuf. recvBuf is a slice into a larger backing array
+	// that has already been advanced past these bytes (Read did
+	// recvBuf = recvBuf[n:]); we cannot safely reclaim that headroom in
+	// general, so allocate a new prefix.
+	s.recv.recvBuf = append(append([]byte{}, p...), s.recv.recvBuf...)
+	// Reverse the bookkeeping Read advanced.
+	s.recv.recvOffset -= uint64(len(p))
+	s.recv.consumedOffset -= uint64(len(p))
+}
+
 // ReceiveData processes incoming STREAM frame data.
 func (s *Stream) ReceiveData(offset uint64, data []byte, fin bool) error {
 	s.recv.mu.Lock()

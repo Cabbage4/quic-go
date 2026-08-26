@@ -843,8 +843,15 @@ func (c *Conn) deliverReceivedStreamData() {
 			continue
 		}
 
-		// Read any available data from the manager's stream (non-blocking)
-		// We try to read one chunk at a time to avoid blocking
+		// Read any available data from the manager's stream — but only if
+		// readCh has room. deliverReceivedStreamData runs on the recvLoop
+		// (holding streamsMu) for EVERY packet; a blocking readCh send here
+		// would stall the entire receive path, and since the peer's ACKs
+		// can't be processed either, the sender deadlocks too. This was the
+		// bulk-transfer flaky stall (both sides idle/blocked). So we probe
+		// readCh capacity first: if full, skip this stream for this packet
+		// (the data stays buffered in the manager stream and is re-read on
+		// the next packet's delivery pass).
 		buf := make([]byte, 65536)
 		n, err := mgrStream.Read(buf)
 		if n > 0 {
@@ -853,6 +860,12 @@ func (c *Conn) deliverReceivedStreamData() {
 			select {
 			case sdkStream.readCh <- data:
 			case <-sdkStream.closeCh:
+				continue
+			default:
+				// readCh full — app is slow to drain. Put the bytes back
+				// into the manager stream's recv buffer so they're not lost
+				// and get re-delivered on the next packet.
+				mgrStream.PushBack(buf[:n])
 				continue
 			}
 		}
@@ -866,6 +879,9 @@ func (c *Conn) deliverReceivedStreamData() {
 			select {
 			case sdkStream.readCh <- nil: // nil = EOF signal
 			case <-sdkStream.closeCh:
+			default:
+				// readCh full — retry the EOF signal on the next packet.
+				sdkStream.eofSent = false
 			}
 		}
 		// A stream whose read side hit EOF and whose write side was
@@ -892,17 +908,22 @@ func (c *Conn) deliverReceivedStreamData() {
 			// New peer-initiated stream — create SDK wrapper
 			sdkStream := c.createPeerStreamLocked(id)
 			if sdkStream != nil {
-				// Read initial data
-				buf := make([]byte, 65536)
-				n, _ := mgrStream.Read(buf)
-				if n > 0 {
-					data := make([]byte, n)
-					copy(data, buf[:n])
-					select {
-					case sdkStream.readCh <- data:
-					case <-sdkStream.closeCh:
-					}
+			// Read initial data. Non-blocking send (same reason as the main
+			// loop above: this runs on recvLoop holding streamsMu; a blocking
+			// send stalls the whole receive path).
+			buf := make([]byte, 65536)
+			n, _ := mgrStream.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case sdkStream.readCh <- data:
+				case <-sdkStream.closeCh:
+				default:
+					// readCh full — put data back; re-delivered next packet.
+					mgrStream.PushBack(buf[:n])
 				}
+			}
 				// Notify AcceptStream for bidirectional streams
 				if sdkStream.bidi {
 					select {
