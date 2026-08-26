@@ -247,18 +247,25 @@ func (h *FrameHandler) handleFrame(f frames.Frame, pnSpace PNSpace, packetNumber
 // === Individual frame handlers ===
 
 func (h *FrameHandler) handleAckFrame(f *frames.ACK, pnSpace PNSpace) (bool, error) {
-	// Parse ACK frame to get acknowledged packet numbers
-	ackedPNs, largestAcked := h.ackHandler.ParseAckFrame(f)
+	// NewlyAckedFromFrame returns only the delta — PNs in this ACK frame that
+	// we have not already processed from a prior cumulative ACK. Without this
+	// de-duplication each ACK re-scans the entire acked set (O(N^2) over the
+	// connection) and per-request latency grows with the request count.
+	ackedPNs, largestAcked := h.ackHandler.NewlyAckedFromFrame(f, pnSpace)
 
 	// Update largest acked PN in connection
 	h.conn.UpdateLargestAcked(pnSpace, largestAcked)
 
-	// Feed to recovery manager
+	// Feed the delta to recovery. re-acked PNs (already removed from
+	// sentPackets) are correctly excluded, so loss detection and RTT sampling
+	// only consider genuinely new acknowledgements.
 	ackDelay := time.Duration(f.ACKDelay) * time.Microsecond
 	h.recovery.OnAckReceived(pnSpace, ackedPNs, largestAcked, ackDelay, now())
 
-	// Process stream ACK state for acknowledged STREAM frames
-	// Look up which frames were in each acknowledged packet
+	// Process stream ACK state for acknowledged STREAM frames.
+	// ackedPNs is the delta, so this loop is O(newly-acked) per ACK, not
+	// O(cumulative). Entries for already-acked packets were deleted on the
+	// prior ACK that first acknowledged them.
 	h.sentFramesMu.Lock()
 	for _, pn := range ackedPNs {
 		sentFrames := h.sentFrames[pn]

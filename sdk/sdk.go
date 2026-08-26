@@ -825,10 +825,21 @@ func (c *Conn) deliverReceivedStreamData() {
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
 
+	// Fully-done streams (read EOF delivered AND write side closed) are
+	// collected and removed from c.streams / the stream.Manager below.
+	// Without this, every closed stream stays in c.streams forever; this
+	// loop runs on every received packet and ranges over c.streams, so the
+	// per-packet cost grows with the total number of streams ever opened
+	// on the connection — O(N^2) over the connection's lifetime, observed
+	// as per-request latency rising linearly with the request count.
+	var dead []uint64
+
 	for id, sdkStream := range c.streams {
 		// Get the underlying stream from the manager
 		mgrStream, ok := c.streamMgr.Get(id)
 		if !ok {
+			// Manager already dropped it — drop our wrapper too.
+			dead = append(dead, id)
 			continue
 		}
 
@@ -857,6 +868,20 @@ func (c *Conn) deliverReceivedStreamData() {
 			case <-sdkStream.closeCh:
 			}
 		}
+		// A stream whose read side hit EOF and whose write side was
+		// closed by the app is fully retired. The final EOF (nil) is
+		// already queued on readCh, so the app's last Read still
+		// completes; removing the wrapper only stops this per-packet
+		// loop from polling it. Also retire it from the manager so
+		// AllStreams()/PendingWindowUpdates stop ranging over it.
+		if sdkStream.eofSent && sdkStream.writeClosed {
+			dead = append(dead, id)
+		}
+	}
+
+	for _, id := range dead {
+		delete(c.streams, id)
+		c.streamMgr.CloseStream(id)
 	}
 
 	// Also check for new peer-initiated streams that need to be

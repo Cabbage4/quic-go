@@ -35,6 +35,31 @@ type AckHandler struct {
 
 	// Whether ECN is enabled
 	ecnEnabled bool
+
+	// processedAcked[space] remembers packet numbers we have already reported
+	// as "newly acked" from a prior ACK frame. QUIC ACK frames are cumulative:
+	// every ACK re-describes the full acknowledged set back to its gaps, so
+	// without de-duplication the receiver would re-materialize and re-scan
+	// O(cumulative acked) PNs on every ACK — an O(N^2) total cost that shows
+	// up as per-request latency growing linearly with the request count.
+	// By emitting only the delta (PNs not seen in a prior ACK) we make each
+	// ACK O(newly-acked) and the whole run O(N).
+	//
+	// largestAckedEver[space] is the high-water mark of largestAcked seen so
+	// far. Because cumulative ACK frames describe everything back to their
+	// lowest gap, the first ACK range of a fresh ACK typically covers
+	// [.., largestAcked] including all PNs we already reported. Tracking the
+	// high-water mark lets us skip iterating that already-reported prefix
+	// (the loop bounds start at max(low, largestAckedEver+1)) — otherwise the
+	// de-dup set makes each *item* O(1) but the *iteration* over the full
+	// cumulative range is still O(N) per ACK, i.e. O(N^2) overall.
+	//
+	// Memory is O(total distinct acked PNs); bounded in practice by the
+	// connection lifetime and on the same order as the per-space received
+	// tracker's range set. (Pruning entries below the largest contiguous
+	// acked would bound it tighter; left as a future refinement.)
+	processedAcked   [3]map[uint64]struct{}
+	largestAckedEver [3]uint64
 }
 
 // NewAckHandler creates a new ACK handler with trackers for all three PN spaces.
@@ -44,6 +69,9 @@ func NewAckHandler() *AckHandler {
 			ack.NewTracker(ack.PNSpaceInitial),
 			ack.NewTracker(ack.PNSpaceHandshake),
 			ack.NewTracker(ack.PNSpaceApplication),
+		},
+		processedAcked: [3]map[uint64]struct{}{
+			{}, {}, {},
 		},
 	}
 }
@@ -192,6 +220,105 @@ func (h *AckHandler) ParseAckFrame(f *frames.ACK) (ackedPNs []uint64, largestAck
 	}
 
 	return ackedPNs, largestAcked
+}
+
+// NewlyAckedFromFrame returns only the packet numbers acknowledged by f that
+// have NOT been reported by a prior call to this method for the same PN space
+// (the delta), plus the frame's largest acknowledged. Subsequent cumulative
+// ACK frames re-describe the full acked set; without this de-duplication the
+// caller would re-process every previously-acked PN on every ACK (O(N^2)).
+//
+// Callers that need the full acked set (e.g. tests) should use ParseAckFrame.
+// The packet-processing path (handleAckFrame → recovery + sentFrames) should
+// use this so both consumers do O(delta) work per ACK instead of O(cumulative).
+func (h *AckHandler) NewlyAckedFromFrame(f *frames.ACK, space PNSpace) ([]uint64, uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	seen := h.processedAcked[space]
+	if seen == nil {
+		seen = make(map[uint64]struct{})
+		h.processedAcked[space] = seen
+	}
+	largestAcked := f.LargestAcked
+
+	guardSub := func(hi, span uint64) (lo uint64, ok bool) {
+		if span > hi {
+			return 0, false
+		}
+		return hi - span, true
+	}
+
+	var newlyAcked []uint64
+	emit := func(pn uint64) {
+		if _, ok := seen[pn]; ok {
+			return // already reported in a prior ACK
+		}
+		seen[pn] = struct{}{}
+		newlyAcked = append(newlyAcked, pn)
+	}
+
+	// High-water mark: PNs <= largestAckedEver have been described by a prior
+	// (cumulative) ACK and, if they were acked, are already in `seen`. The new
+	// PNs this ACK can contribute in its first range are therefore
+	// (largestAckedEver, largestAcked] — so start iterating at
+	// max(low, largestAckedEver+1) instead of `low`. This turns the first
+	// range from O(cumulative) into O(delta). Gap ranges below are scanned
+	// normally (they're small/absent in the common no-loss case, and `seen`
+	// de-dupes any already-reported ones).
+	firstNew := h.largestAckedEver[space] + 1 // 1 if no prior ACK (wrap-safe: 0+1=1, PN 0 handled below)
+
+	// First ACK range: [largestAcked - firstACKRange, largestAcked]
+	low, ok := guardSub(largestAcked, f.FirstACKRange)
+	if !ok {
+		low = 0
+	}
+	start := low
+	if firstNew > start {
+		start = firstNew
+	}
+	for pn := start; pn <= largestAcked && len(newlyAcked) < maxAckedPacketNumbers; pn++ {
+		emit(pn)
+	}
+
+	// Subsequent ranges (with gaps)
+	prevLow := low
+	for _, r := range f.ACKRanges {
+		if len(newlyAcked) >= maxAckedPacketNumbers {
+			break
+		}
+		rangeHi, ok := guardSub(prevLow, r.Gap)
+		if !ok {
+			break
+		}
+		rangeHi, ok = guardSub(rangeHi, 1)
+		if !ok {
+			break
+		}
+		rangeLo, ok := guardSub(rangeHi, r.ACKRangeLen)
+		if !ok {
+			rangeLo = 0
+		}
+		// Gap ranges sit below the first range. Skip any entirely below the
+		// high-water mark (already reported); otherwise scan from
+		// max(rangeLo, firstNew).
+		if rangeHi >= firstNew {
+			gStart := rangeLo
+			if firstNew > gStart {
+				gStart = firstNew
+			}
+			for pn := gStart; pn <= rangeHi && len(newlyAcked) < maxAckedPacketNumbers; pn++ {
+				emit(pn)
+			}
+		}
+		prevLow = rangeLo
+	}
+
+	if largestAcked > h.largestAckedEver[space] {
+		h.largestAckedEver[space] = largestAcked
+	}
+
+	return newlyAcked, largestAcked
 }
 
 // IsDuplicate returns true if the given packet number was already received.
