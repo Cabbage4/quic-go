@@ -211,6 +211,11 @@ type Stream struct {
 	closeCh  chan struct{}
 	closed   bool
 
+	// eofSent latches whether an EOF signal has already been queued
+	// on readCh, so finished streams don't re-queue nil on every
+	// packet (which would eventually block stream delivery).
+	eofSent bool
+
 	// Write side
 	writeOffset uint64
 	writeClosed bool

@@ -845,8 +845,13 @@ func (c *Conn) deliverReceivedStreamData() {
 				continue
 			}
 		}
-		// If EOF, signal it
-		if err != nil && n == 0 {
+		// If EOF, signal it — but only once. mgrStream.Read keeps
+		// returning EOF for finished streams, and re-queuing a nil
+		// on every packet would eventually fill readCh and block
+		// this loop (which holds streamsMu), stalling delivery on
+		// all streams.
+		if err != nil && n == 0 && !sdkStream.eofSent {
+			sdkStream.eofSent = true
 			select {
 			case sdkStream.readCh <- nil: // nil = EOF signal
 			case <-sdkStream.closeCh:
@@ -1073,8 +1078,10 @@ func (c *Conn) deliverStreamData(s *parsedStreamData) {
 		}
 	}
 
-	// Handle FIN
-	if s.FIN {
+	// Handle FIN (also latch: retransmitted FIN frames must not queue
+	// a second EOF signal).
+	if s.FIN && !streamObj.eofSent {
+		streamObj.eofSent = true
 		select {
 		case streamObj.readCh <- nil: // nil = EOF signal
 		case <-streamObj.closeCh:
