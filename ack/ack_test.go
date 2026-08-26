@@ -16,7 +16,7 @@ func TestTrackerEmpty(t *testing.T) {
 
 func TestSinglePacket(t *testing.T) {
 	tr := NewTracker(PNSpaceApplication)
-	tr.ReceivedPacket(0)
+	tr.ReceivedPacket(0, true)
 
 	data := tr.BuildAckFrame()
 	if data == nil {
@@ -36,7 +36,7 @@ func TestSinglePacket(t *testing.T) {
 func TestContiguousPackets(t *testing.T) {
 	tr := NewTracker(PNSpaceApplication)
 	for i := uint64(0); i < 5; i++ {
-		tr.ReceivedPacket(i)
+		tr.ReceivedPacket(i, true)
 	}
 
 	data := tr.BuildAckFrame()
@@ -60,12 +60,12 @@ func TestContiguousPackets(t *testing.T) {
 func TestGapDetection(t *testing.T) {
 	tr := NewTracker(PNSpaceApplication)
 	// Receive 0,1,2 then skip to 5,6,7
-	tr.ReceivedPacket(0)
-	tr.ReceivedPacket(1)
-	tr.ReceivedPacket(2)
-	tr.ReceivedPacket(5)
-	tr.ReceivedPacket(6)
-	tr.ReceivedPacket(7)
+	tr.ReceivedPacket(0, true)
+	tr.ReceivedPacket(1, true)
+	tr.ReceivedPacket(2, true)
+	tr.ReceivedPacket(5, true)
+	tr.ReceivedPacket(6, true)
+	tr.ReceivedPacket(7, true)
 
 	data := tr.BuildAckFrame()
 	if data == nil {
@@ -95,9 +95,9 @@ func TestGapDetection(t *testing.T) {
 func TestMultipleGaps(t *testing.T) {
 	tr := NewTracker(PNSpaceApplication)
 	// Receive: 0, 3, 6
-	tr.ReceivedPacket(0)
-	tr.ReceivedPacket(3)
-	tr.ReceivedPacket(6)
+	tr.ReceivedPacket(0, true)
+	tr.ReceivedPacket(3, true)
+	tr.ReceivedPacket(6, true)
 
 	data := tr.BuildAckFrame()
 	if data == nil {
@@ -125,7 +125,7 @@ func TestMultipleGaps(t *testing.T) {
 
 func TestDuplicateDetection(t *testing.T) {
 	tr := NewTracker(PNSpaceApplication)
-	tr.ReceivedPacket(5)
+	tr.ReceivedPacket(5, true)
 
 	if !tr.IsDuplicate(5) {
 		t.Error("packet 5 should be duplicate")
@@ -135,7 +135,7 @@ func TestDuplicateDetection(t *testing.T) {
 	}
 
 	// Receive it again — should be silently ignored
-	tr.ReceivedPacket(5)
+	tr.ReceivedPacket(5, true)
 	data := tr.BuildAckFrame()
 	if data.FirstAckRange != 0 {
 		t.Errorf("first range = %d, want 0 (single packet)", data.FirstAckRange)
@@ -145,9 +145,9 @@ func TestDuplicateDetection(t *testing.T) {
 func TestOutOfOrderFill(t *testing.T) {
 	tr := NewTracker(PNSpaceApplication)
 	// Receive 0,2,4 then fill in 1,3
-	tr.ReceivedPacket(0)
-	tr.ReceivedPacket(2)
-	tr.ReceivedPacket(4)
+	tr.ReceivedPacket(0, true)
+	tr.ReceivedPacket(2, true)
+	tr.ReceivedPacket(4, true)
 
 	data := tr.BuildAckFrame()
 	if data.RangeCount != 2 {
@@ -155,8 +155,8 @@ func TestOutOfOrderFill(t *testing.T) {
 	}
 
 	// Fill the gaps
-	tr.ReceivedPacket(1)
-	tr.ReceivedPacket(3)
+	tr.ReceivedPacket(1, true)
+	tr.ReceivedPacket(3, true)
 
 	data2 := tr.BuildAckFrame()
 	if data2.RangeCount != 0 {
@@ -175,7 +175,7 @@ func TestShouldSendAck(t *testing.T) {
 		t.Error("should not send ACK when no packets received")
 	}
 
-	tr.ReceivedPacket(0)
+	tr.ReceivedPacket(0, true)
 
 	// ACK-eliciting packet → immediate ACK
 	if !tr.ShouldSendAck(true) {
@@ -196,8 +196,8 @@ func TestShouldSendAck(t *testing.T) {
 
 func TestReset(t *testing.T) {
 	tr := NewTracker(PNSpaceApplication)
-	tr.ReceivedPacket(0)
-	tr.ReceivedPacket(1)
+	tr.ReceivedPacket(0, true)
+	tr.ReceivedPacket(1, true)
 	tr.ReceivedECNPacket(2, true, false, false)
 
 	tr.Reset()

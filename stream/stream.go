@@ -90,6 +90,15 @@ type SendState struct {
 	maxData      uint64 // flow control limit for sending
 	ackedOffset  uint64 // highest contiguous offset acknowledged
 	ackedFin     bool  // whether FIN has been acknowledged
+
+	// blockedNotified latches that a STREAM_DATA_BLOCKED frame has already
+	// been emitted at the current send limit. Per RFC 9000 §19.10 a sender
+	// SHOULD signal blockage — but emitting it on every control-frame flush
+	// (once per received packet) creates an ack-eliciting ping-pong storm.
+	// We emit at most once per maxData value, and re-arm when
+	// UpdateSendMaxData raises the limit (or when the stream becomes
+	// unblocked).
+	blockedNotified bool
 }
 
 // RecvState manages the receiving side of a stream.
@@ -122,6 +131,9 @@ type Stream struct {
 	connDataSent     uint64 // total data sent on connection
 	connMaxData      uint64 // connection-level flow control limit
 	connDataReceived uint64
+	// connBlockedNotified latches DATA_BLOCKED emission at the current
+	// connection-level limit, for the same reason as SendState.blockedNotified.
+	connBlockedNotified bool
 }
 
 // New creates a new stream with the given ID.
@@ -331,6 +343,9 @@ func (s *Stream) UpdateSendMaxData(maxData uint64) {
 	defer s.send.mu.Unlock()
 	if maxData > s.send.maxData {
 		s.send.maxData = maxData
+		// Peer granted new credit — re-arm so a future block (if the new
+		// window is still exhausted) can be signalled again.
+		s.send.blockedNotified = false
 	}
 }
 
@@ -391,15 +406,24 @@ func (s *Stream) GenConnWindowUpdate(connConsumed, connMaxData, windowIncrement 
 
 // GenStreamDataBlocked generates a STREAM_DATA_BLOCKED frame if this stream
 // is flow-control blocked on the send side.
-// Returns nil if not blocked.
+// Returns nil if not blocked, or if a BLOCKED frame has already been emitted
+// at the current send limit (avoids ack-eliciting ping-pong storms when the
+// per-packet control-frame flush polls this generator repeatedly).
 func (s *Stream) GenStreamDataBlocked() *frames.StreamDataBlocked {
 	s.send.mu.Lock()
 	defer s.send.mu.Unlock()
 
-	// Only generate if we're actually blocked (offset >= maxData)
+	// Not blocked — there is still send credit. Re-arm the latch so a future
+	// block (after the window is exhausted again) gets signalled.
 	if s.send.offset < s.send.maxData {
+		s.send.blockedNotified = false
 		return nil
 	}
+	// Blocked, but we already notified the peer at this limit — don't spam.
+	if s.send.blockedNotified {
+		return nil
+	}
+	s.send.blockedNotified = true
 	return &frames.StreamDataBlocked{
 		StreamID:    s.ID,
 		MaximumData: s.send.maxData,
@@ -408,14 +432,22 @@ func (s *Stream) GenStreamDataBlocked() *frames.StreamDataBlocked {
 
 // GenDataBlocked generates a DATA_BLOCKED frame if the connection-level
 // flow control is blocking sends.
-// Returns nil if not blocked.
+// Returns nil if not blocked, or if a DATA_BLOCKED frame has already been
+// emitted at the current connection limit (avoids ack-eliciting ping-pong
+// storms when the per-packet control-frame flush polls this generator).
 func (s *Stream) GenDataBlocked() *frames.DataBlocked {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.connDataSent < s.connMaxData {
+		// Not blocked at the connection level — re-arm the latch.
+		s.connBlockedNotified = false
 		return nil
 	}
+	if s.connBlockedNotified {
+		return nil
+	}
+	s.connBlockedNotified = true
 	return &frames.DataBlocked{
 		MaximumData: s.connMaxData,
 	}
@@ -711,11 +743,23 @@ func (m *Manager) AllStreams() []*Stream {
 }
 
 // UpdateConnMaxData updates the connection-level flow control limit.
+// It raises the manager's limit AND propagates the new value to every stream
+// (each Stream caches connMaxData for the send path); streams that were
+// blocked at the old limit also get their DATA_BLOCKED latch re-armed so the
+// new credit can be signalled if it is still insufficient.
 func (m *Manager) UpdateConnMaxData(maxData uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if maxData > m.connMaxData {
 		m.connMaxData = maxData
+		for _, s := range m.streams {
+			s.mu.Lock()
+			if maxData > s.connMaxData {
+				s.connMaxData = maxData
+				s.connBlockedNotified = false // re-arm: new credit, may block again
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 

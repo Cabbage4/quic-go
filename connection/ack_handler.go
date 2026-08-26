@@ -54,17 +54,17 @@ func NewAckHandler() *AckHandler {
 //   - pn: packet number
 //   - space: packet number space
 //   - ackEliciting: whether the packet contains ACK-eliciting frames
+//
+// Only ACK-eliciting packets arm the "pending ACK" latch (RFC 9000 §13.2).
+// Pure-ACK packets are recorded for duplicate detection but do NOT cause an
+// ACK to be generated — otherwise the two endpoints ACK each other's ACKs
+// forever (an ACK ping-pong storm).
 func (h *AckHandler) OnPacketReceived(pn uint64, space PNSpace, ackEliciting bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	t := h.trackers[space]
-	t.ReceivedPacket(pn)
-
-	if ackEliciting {
-		// Mark that we need to send an ACK for this space
-		// The ShouldSendAck method will return true immediately for ack-eliciting
-	}
+	t.ReceivedPacket(pn, ackEliciting)
 }
 
 // OnECNPacketReceived records an incoming packet with ECN markings.
@@ -133,25 +133,59 @@ func (h *AckHandler) BuildAckFrame(space PNSpace) *frames.ACK {
 
 // ParseAckFrame parses an incoming ACK frame and extracts acknowledged packet numbers.
 //
+// maxAckedPacketNumbers caps how many packet numbers ParseAckFrame will
+// materialize from a single ACK frame. A well-formed peer ACKs at most as
+// many packets as the connection has sent; anything beyond that indicates a
+// malformed or hostile frame and would otherwise drive the slice build into
+// an effectively unbounded (or uint64-underflowed) loop, pinning the receive
+// goroutine.
+const maxAckedPacketNumbers = 1 << 20 // 1,048,576
+
 // Returns the list of acknowledged packet numbers and the largest acknowledged.
 func (h *AckHandler) ParseAckFrame(f *frames.ACK) (ackedPNs []uint64, largestAcked uint64) {
 	largestAcked = f.LargestAcked
 
+	// guardSub returns lo clamped so that the range [lo, hi] is non-empty and
+	// does not underflow uint64 arithmetic. If the claimed range would wrap
+	// past zero (i.e. the peer claims a range straddling 0, which can only be
+	// malformed), it clamps lo to 0.
+	guardSub := func(hi, span uint64) (lo uint64, ok bool) {
+		if span > hi {
+			return 0, false // would underflow
+		}
+		return hi - span, true
+	}
+
 	// The first ACK range: [largestAcked - firstACKRange, largestAcked]
-	low := largestAcked - f.FirstACKRange
-	for pn := low; pn <= largestAcked; pn++ {
+	low, ok := guardSub(largestAcked, f.FirstACKRange)
+	if !ok {
+		low = 0
+	}
+	for pn := low; pn <= largestAcked && len(ackedPNs) < maxAckedPacketNumbers; pn++ {
 		ackedPNs = append(ackedPNs, pn)
 	}
 
 	// Subsequent ranges (with gaps)
 	prevLow := low
 	for _, r := range f.ACKRanges {
-		// Gap: number of contiguous unacknowledged packets between ranges
-		// After prevLow, gap packets are prevLow-1, prevLow-2, ..., prevLow-r.Gap
-		// Next range starts at prevLow - r.Gap - 1 (highest acked in this range)
-		rangeHi := prevLow - r.Gap - 1
-		rangeLo := rangeHi - r.ACKRangeLen
-		for pn := rangeLo; pn <= rangeHi; pn++ {
+		if len(ackedPNs) >= maxAckedPacketNumbers {
+			break
+		}
+		// rangeHi = prevLow - r.Gap - 1, computed as two guarded steps.
+		rangeHi, ok := guardSub(prevLow, r.Gap)
+		if !ok {
+			break
+		}
+		rangeHi, ok = guardSub(rangeHi, 1)
+		if !ok {
+			break
+		}
+		rangeLo, ok := guardSub(rangeHi, r.ACKRangeLen)
+		if !ok {
+			// Malformed range straddling 0 — clamp to 0 rather than spin.
+			rangeLo = 0
+		}
+		for pn := rangeLo; pn <= rangeHi && len(ackedPNs) < maxAckedPacketNumbers; pn++ {
 			ackedPNs = append(ackedPNs, pn)
 		}
 		prevLow = rangeLo
@@ -165,6 +199,24 @@ func (h *AckHandler) IsDuplicate(pn uint64, space PNSpace) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.trackers[space].IsDuplicate(pn)
+}
+
+// LargestReceivedPN returns the largest packet number we have successfully
+// received and decoded from the peer in the given PN space, or nil if none.
+//
+// This is the correct context for reconstructing the next incoming packet's
+// truncated PN (RFC 9000 §17.3.2 / Appendix A.3 use "largest PN successfully
+// processed in the current space" — i.e. the largest received, NOT the largest
+// of our own sent packets that the peer has acked).
+func (h *AckHandler) LargestReceivedPN(space PNSpace) *uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pn, ok := h.trackers[space].LargestAcknowledged()
+	if !ok {
+		return nil
+	}
+	v := pn
+	return &v
 }
 
 // SetAckDelayExponent sets the ACK delay exponent for a PN space.

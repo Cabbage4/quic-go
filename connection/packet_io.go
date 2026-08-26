@@ -42,6 +42,7 @@ import (
 	"github.com/Cabbage4/quic-go/errors"
 	"github.com/Cabbage4/quic-go/frames"
 	"github.com/Cabbage4/quic-go/header"
+	"github.com/Cabbage4/quic-go/packet"
 )
 
 // PacketIO manages the complete packet send/receive pipeline.
@@ -648,25 +649,24 @@ func (p *PacketIO) handleRetryPacket(lh *header.LongHeader) error {
 }
 
 // reconstructPN reconstructs the full packet number from a truncated one.
-// This uses the largest acknowledged PN as context (RFC 9000 §17.3.2).
+// This uses the largest acknowledged PN as context (RFC 9000 §17.3.2 /
+// Appendix A.3).
+//
+// We delegate to packet.DecodePacketNumber, which is the RFC-faithful
+// implementation with correct unsigned-underflow guards. The previous inline
+// version computed `expectedPN - (rangeBits>>1)` without guarding
+// `expectedPN >= rangeBits/2`; for a 4-byte PN field with a small expectedPN
+// that subtraction underflows to ~2^64, making the "candidate too low"
+// condition always true and inflating every packet number by 2^32
+// (observed as largestAcked ≈ 0x1_0000_5EE7, freezing the receive loop).
 func (p *PacketIO) reconstructPN(truncatedPN uint64, pnLen int, space PNSpace) uint64 {
-	largestAcked := p.conn.LargestAckedPN(space)
-	if largestAcked == nil {
-		// No packets acked yet; the truncated PN is the full PN
+	largestReceived := p.ackHandler.LargestReceivedPN(space)
+	if largestReceived == nil {
+		// No packets received yet; the truncated PN is the full PN
 		return truncatedPN
 	}
 
-	// Packet number reconstruction algorithm (RFC 9000 §17.3.2)
-	expectedPN := *largestAcked + 1
-	rangeBits := uint64(1) << (uint(pnLen) * 8)
-	candidatePN := (expectedPN & ^(rangeBits - 1)) | (truncatedPN & (rangeBits - 1))
-
-	// If candidate is less than expected, it wrapped around
-	if candidatePN < expectedPN-(rangeBits>>1) {
-		candidatePN += rangeBits
-	}
-
-	return candidatePN
+	return packet.DecodePacketNumber(*largestReceived, truncatedPN, pnLen*8)
 }
 
 // unprotectLongHeader performs two-phase unprotection for long header packets

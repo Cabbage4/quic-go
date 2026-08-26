@@ -101,7 +101,13 @@ func (t *Tracker) SetECNEnabled(enabled bool) {
 // ReceivedPacket records that a packet with the given number was received.
 // This is the core method that maintains the set of received packets.
 // Duplicate packets are silently ignored.
-func (t *Tracker) ReceivedPacket(pn uint64) {
+//
+// Per RFC 9000 §13.2-§13.3, only ACK-eliciting packets cause the peer to send
+// an ACK. Therefore the "pending ACK" latch is armed ONLY when ackEliciting
+// is true. Arming it for every packet (including pure-ACK packets) causes an
+// infinite ACK ping-pong: A sends ACK → B receives it, arms pending, sends
+// ACK → A receives, arms pending, sends ACK → …, flooding the connection.
+func (t *Tracker) ReceivedPacket(pn uint64, ackEliciting bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -118,13 +124,17 @@ func (t *Tracker) ReceivedPacket(pn uint64) {
 		if pn == r.Lo-1 {
 			r.Lo = pn
 			t.mergeAdjacent()
-			t.pending = true
+			if ackEliciting {
+				t.pending = true
+			}
 			return
 		}
 		if pn == r.Hi+1 {
 			r.Hi = pn
 			t.mergeAdjacent()
-			t.pending = true
+			if ackEliciting {
+				t.pending = true
+			}
 			return
 		}
 	}
@@ -135,7 +145,9 @@ func (t *Tracker) ReceivedPacket(pn uint64) {
 		return t.ranges[i].Lo < t.ranges[j].Lo
 	})
 	t.mergeAdjacent()
-	t.pending = true
+	if ackEliciting {
+		t.pending = true
+	}
 }
 
 // mergeAdjacent merges ranges that are now adjacent after an insert.
@@ -162,6 +174,8 @@ func (t *Tracker) mergeAdjacent() {
 }
 
 // ReceivedECNPacket records a received packet with ECN markings.
+// ECN-CE-marked packets are treated as ACK-eliciting (the CE signal is
+// congestion feedback the receiver should acknowledge promptly).
 func (t *Tracker) ReceivedECNPacket(pn uint64, ect0, ect1, ce bool) {
 	t.mu.Lock()
 	if ect0 {
@@ -174,7 +188,7 @@ func (t *Tracker) ReceivedECNPacket(pn uint64, ect0, ect1, ce bool) {
 		t.ceCount++
 	}
 	t.mu.Unlock()
-	t.ReceivedPacket(pn)
+	t.ReceivedPacket(pn, ce)
 }
 
 // HasPending returns true if there are unacknowledged received packets.
