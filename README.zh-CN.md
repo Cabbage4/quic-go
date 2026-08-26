@@ -490,10 +490,11 @@ cd quic-go && go run ./cmd/demo
 
 1. **流退役（主修复）**。`Conn.deliverReceivedStreamData` 每个收包都执行，遍历 `c.streams`（以及 `Manager.AllStreams()`）；而 `Manager.CloseStream` 虽存在但**零调用者**，每个已关闭的流都永久留在这些 map 里 → 每包 O(N²) 扫描。现已在该循环中把完全关闭的流（`eofSent && writeClosed`）从 `c.streams` 与 stream `Manager` 两处一并退役。
 2. **ACK 增量去重**。ACK 帧是累计的，每个 ACK 都重新描述全部已确认集合，接收方每次都重新物化/扫描 → 每个 ACK 一次 O(N)、全程 O(N²)。`AckHandler.NewlyAckedFromFrame` 现在只返回**新**确认的包号（用每空间高水位跳过已上报前缀），使已发帧跟踪与丢包检测每个 ACK 只做 O(增量) 工作。（对请求速率负载而言，此项贡献小于 #1，但正确且有界。）
+3. **`Stream.Write` 分片**。`Stream.Write` 此前把整个 buffer 作为单个 STREAM 帧塞进一个包；8 MiB 写入会产生一个超限 UDP 数据报、被内核静默丢弃（大块传输毫无进展）。`Write` 现已分片为 ≤1100 字节的 STREAM 帧、各自成包，发送侧得以完成。（大块 *回显* 整轮 8 MiB 仍会在传完前卡住——见"仍存在的限制"。）
 
 ### 仍存在的限制
 
-- **大块传输（8 MiB echo）仍会死锁**。`Stream.Write` 在流控窗口耗尽时阻塞、且窗口不增长——持续大块传输下，连接级流控窗口未在发送侧正确传播/刷新。这是下一项要修的（见"结论"#1）。
+- **大块传输（8 MiB echo）仍会卡住**。此前的"死锁"诊断有误：真正根因是 `Stream.Write` 把整个 buffer 作为单个 STREAM 帧塞进一个包——8MB 的 UDP 数据报超限被内核丢弃。`Write` 现已分片为 ≤1100 字节的包，因此能完成（8 MiB 约 52ms 入队）且回显数据有流动，但整轮 8 MiB 在 90s 内仍未传完即卡住——是持续吞吐下接收侧/每包开销更深处的问题，尚未定位。（请求速率负载用的是极小 payload，不受影响。）
 - **ACK 频率实际为 1**：每收一个 ack-eliciting 包就单独回一个 ACK 包（无合并、无延迟 ACK）；每个请求在链路上仍约 ~10 个包。
 - 类 NewReno 拥塞控制，无 pacing。
 
@@ -501,7 +502,7 @@ cd quic-go && go run ./cmd/demo
 
 吞吐仍远低于生产级栈（参考 [quic-go](https://github.com/quic-go/quic-go) 可达多 Gbit/s、数万 req/s），对一个单文件单职责的学习实现属预期。按优先级，剩余提升空间最大的是：
 
-1. **修复发送侧连接级流控窗口增长**，使大块传输不再死锁。
+1. **定位并修复大块传输回显卡顿** —— `Write` 现已正确分片；剩余卡顿在持续吞吐下的接收/投递路径（8 MiB 约 7000 包的每包开销，外加尚未定位的卡顿点）。
 2. **ACK 合并 / 延迟 ACK** —— 把每请求 ~10 个包降到 ~2-3。
 3. Pacing 与更现代的拥塞控制（如 BBR）。
 

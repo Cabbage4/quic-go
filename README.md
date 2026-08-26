@@ -490,10 +490,11 @@ Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scala
 
 1. **Stream retirement (the dominant fix).** `Conn.deliverReceivedStreamData` runs on every received packet and ranged over `c.streams` (plus `Manager.AllStreams()`); `Manager.CloseStream` existed but had **zero callers**, so every closed stream stayed in those maps for the connection's lifetime → an O(N²) per-packet scan. Fully-closed streams (`eofSent && writeClosed`) are now retired from both `c.streams` and the stream `Manager` in that loop.
 2. **ACK delta de-duplication.** ACK frames are cumulative, so each ACK re-described the full acknowledged set and the receiver re-materialized/re-scanned it every time — an O(N) pass per ACK, O(N²) over the run. `AckHandler.NewlyAckedFromFrame` now emits only the *newly*-acked packet numbers (using a per-space high-water mark to skip the already-reported prefix), so both the sent-frame tracker and loss detection do O(delta) work per ACK. (This was a smaller contributor than #1 for the request-rate workload, but is correct and bounded.)
+3. **Stream.Write chunking.** `Stream.Write` previously emitted the entire buffer as a single STREAM frame in one packet; for an 8 MiB write that produced one oversized UDP datagram the kernel silently dropped (bulk transfers made no progress). `Write` now chunks into ≤1100-byte STREAM frames, each its own packet, so the write side completes. (The bulk *echo* round-trip still stalls before finishing 8 MiB — see "Remaining limitations".)
 
 ### Remaining limitations
 
-- **Bulk transfer (8 MiB echo) still deadlocks.** `Stream.Write` blocks when the flow-control window is exhausted and the window does not grow — the connection-level flow-control window is not propagated/refreshed on the send path under sustained large transfers. This is the next item to fix (see "Takeaway" #1).
+- **Bulk transfer (8 MiB echo) still stalls.** The earlier "deadlock" was mis-diagnosed: the real root cause was that `Stream.Write` emitted the entire buffer as one STREAM frame in one packet — an oversized UDP datagram the kernel drops. `Write` now chunks into ≤1100-byte packets, so it completes (8 MiB queued in ~52 ms) and echo data flows, but the round-trip still stalls before the full 8 MiB finishes within 90 s — a deeper receive-path / per-packet-overhead issue under sustained throughput, not yet diagnosed. (The request-rate workload uses tiny payloads and is unaffected.)
 - **ACK frequency is effectively 1**: one ACK packet per ack-eliciting received packet (no coalescing or delayed ACK); each request still costs roughly ~10 packets on the wire.
 - NewReno-style congestion control, no pacing.
 
@@ -501,7 +502,7 @@ Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scala
 
 Throughput is still well below a production stack (the reference [quic-go](https://github.com/quic-go/quic-go) reaches multi-Gbit/s and tens of thousands of req/s), which is expected for a single-file-per-concern learning implementation. The highest-leverage remaining improvements, in priority order:
 
-1. **Fix connection-level flow-control window growth** on the send path so bulk transfers no longer deadlock.
+1. **Diagnose & fix the bulk-transfer echo stall** — `Write` now chunks correctly; the remaining stall is in the receive/delivery path under sustained throughput (per-packet overhead at ~7,000 packets / 8 MiB, plus an as-yet-unidentified stall point).
 2. **ACK coalescing / delayed ACK** — collapse ~10 packets/request to ~2-3.
 3. Pacing and a more modern congestion controller (e.g. BBR).
 
