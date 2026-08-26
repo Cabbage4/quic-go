@@ -213,7 +213,6 @@ func (p *PacketIO) SendPacket(level crypto.EncryptionLevel, frs []frames.Frame) 
 	}
 
 	// Send via UDP
-	fmt.Printf("[PacketIO] Sending packet: level=%s, pn=%d, len=%d\n", level, pn, len(protected))
 	_, err = p.writeUDP(protected)
 	if err != nil {
 		return pn, fmt.Errorf("connection: UDP write failed: %w", err)
@@ -440,7 +439,6 @@ func (p *PacketIO) processPacket(pkt []byte) error {
 
 	// Determine if long or short header
 	isLong := pkt[0]&0x80 != 0
-	fmt.Printf("[PacketIO] processPacket: len=%d, isLong=%v, firstByte=0x%02x\n", len(pkt), isLong, pkt[0])
 
 	if isLong {
 		return p.processLongHeaderPacket(pkt)
@@ -993,7 +991,6 @@ func (p *PacketIO) FlushPendingControlFrames() error {
 			continue
 		}
 
-		fmt.Printf("[PacketIO] Sending CRYPTO data: level=%s, len=%d\n", level, len(data))
 		_, err := p.SendPacket(level, []frames.Frame{
 			&frames.Crypto{Offset: 0, Data: data},
 		})

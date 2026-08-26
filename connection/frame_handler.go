@@ -475,7 +475,6 @@ func (h *FrameHandler) GenerateControlFrames(pnSpace PNSpace) []frames.Frame {
 
 	// HANDSHAKE_DONE (server only, once)
 	if h.pendingHandshakeDone && pnSpace == PNSpaceApplication {
-		fmt.Printf("[FrameHandler] Generating HANDSHAKE_DONE frame for PNSpaceApplication\n")
 		out = append(out, &frames.HandshakeDone{})
 		h.pendingHandshakeDone = false
 	}

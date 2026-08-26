@@ -158,7 +158,6 @@ func (s *TLSSession) Start(ctx context.Context) error {
 			return fmt.Errorf("crypto: TLS Start failed: %w", err)
 		}
 		s.started = true
-		fmt.Printf("[TLS] Start: started=%v, isClient=%v\n", s.started, s.isClient)
 	}
 
 	return s.processEvents()
@@ -175,8 +174,6 @@ func (s *TLSSession) HandleCryptoData(level EncryptionLevel, data []byte) error 
 	// Record the offset for this data
 	offset := s.rxCryptoOffset[level]
 	s.rxCryptoOffset[level] = offset + uint64(len(data))
-
-	fmt.Printf("[TLS] HandleCryptoData: level=%s, offset=%d, len=%d\n", level, offset, len(data))
 
 	// Feed the data to the TLS stack
 	if err := s.conn.HandleData(tlsQUICLevel(level), data); err != nil {
@@ -222,8 +219,7 @@ func (s *TLSSession) processEvents() error {
 			if err != nil {
 				return fmt.Errorf("crypto: failed to create read key set: %w", err)
 			}
-			fmt.Printf("[TLS] QUICSetReadSecret: level=%s, suite=%d\n", level, csID)
-			if s.onReadKeys != nil {
+		if s.onReadKeys != nil {
 				s.onReadKeys(level, ks)
 			}
 
@@ -241,18 +237,15 @@ func (s *TLSSession) processEvents() error {
 			if err != nil {
 				return fmt.Errorf("crypto: failed to create write key set: %w", err)
 			}
-			fmt.Printf("[TLS] QUICSetWriteSecret: level=%s, suite=%d\n", level, csID)
-			if s.onWriteKeys != nil {
+		if s.onWriteKeys != nil {
 				s.onWriteKeys(level, ks)
 			}
 
 		case tls.QUICWriteData:
 			level := tlsToQUICLevel(event.Level)
-			fmt.Printf("[TLS] QUICWriteData: level=%s, len=%d\n", level, len(event.Data))
 			s.txCryptoData[level] = append(s.txCryptoData[level], event.Data...)
 
 		case tls.QUICHandshakeDone:
-			fmt.Printf("[TLS] QUICHandshakeDone\n")
 			s.handshakeComplete.Store(true)
 			// For a server, handshake is confirmed when complete
 			if !s.isClient {
@@ -264,7 +257,6 @@ func (s *TLSSession) processEvents() error {
 			// (RFC 9001 §4.6.2)
 
 		case tls.QUICTransportParameters:
-			fmt.Printf("[TLS] QUICTransportParameters: len=%d\n", len(event.Data))
 			s.receivedTransportParams = event.Data
 			if s.onTransportParams != nil {
 				// Copy data since it's owned by crypto/tls
@@ -274,14 +266,12 @@ func (s *TLSSession) processEvents() error {
 			}
 
 		case tls.QUICTransportParametersRequired:
-			fmt.Printf("[TLS] QUICTransportParametersRequired\n")
 			// We need to provide transport parameters
 			if len(s.config.TransportParameters) > 0 {
 				s.conn.SetTransportParameters(s.config.TransportParameters)
 			}
 
 		case tls.QUICErrorEvent:
-			fmt.Printf("[TLS] QUICErrorEvent: %v\n", event.Err)
 			s.tlsErr = event.Err
 			return fmt.Errorf("crypto: TLS error: %w", event.Err)
 
