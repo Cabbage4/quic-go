@@ -68,6 +68,25 @@ func generateHeaderProtectionMask(hpKey, sample []byte, suiteID CipherSuiteID) (
 	}
 }
 
+// GenerateHeaderProtectionMask generates the 5-byte header protection mask
+// from the given packet. The sample is taken from the ciphertext starting
+// 4 bytes after the packet number offset (RFC 9001 §5.4.2).
+//
+// This is an exported helper for callers that need to do two-phase
+// unprotection: first unmask byte 0 to discover the real PN length,
+// then unmask only the actual PN bytes (not all 4) to avoid corrupting
+// ciphertext when the real PN is shorter than 4 bytes.
+func GenerateHeaderProtectionMask(hpKey []byte, packet []byte, pnOffset int, suiteID CipherSuiteID) ([]byte, error) {
+	sampleOffset := pnOffset + 4
+	sampleEnd := sampleOffset + HeaderProtectionSampleLen
+	if len(packet) < sampleEnd {
+		return nil, fmt.Errorf("crypto: packet too short for header protection sample (need %d bytes, have %d)",
+			sampleEnd, len(packet))
+	}
+	sample := packet[sampleOffset:sampleEnd]
+	return generateHeaderProtectionMask(hpKey, sample, suiteID)
+}
+
 // ApplyHeaderProtection applies header protection to a packet (RFC 9001 §5.4, Figure 6).
 //
 // This function is called AFTER AEAD encryption, when the packet payload

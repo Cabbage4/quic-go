@@ -305,19 +305,12 @@ func (h *FrameHandler) handleCryptoFrame(f *frames.Crypto, pnSpace PNSpace) (boo
 		data:  f.Data,
 	})
 
-	// Check if handshake completed
-	session := h.keyStore.TLSSession()
-	if session != nil && session.HandshakeComplete() && !h.handshakeComplete {
-		h.handshakeComplete = true
-		h.conn.SetState(StateEstablished)
-
-		// Server: handshake confirmed when complete, send HANDSHAKE_DONE
-		if h.conn.IsServer() {
-			h.handshakeConfirmed = true
-			h.pendingHandshakeDone = true
-			h.recovery.SetHandshakeConfirmed(true)
-		}
-	}
+	// Do NOT call session.HandshakeComplete() here — it acquires the TLS
+	// session mutex, which the driveHandshakeLoop may be holding while
+	// waiting inside HandleCryptoData → HandleData. Calling it here from
+	// the recvLoop would deadlock.
+	// The handshake completion check is done by driveHandshakeLoop after
+	// it processes the queued CRYPTO data (see FlushPendingCryptoData).
 
 	return true, nil
 }
@@ -431,6 +424,25 @@ func (h *FrameHandler) FlushPendingCryptoData() error {
 			return fmt.Errorf("connection: CRYPTO frame handling failed: %w", err)
 		}
 	}
+
+	// After feeding CRYPTO data, check if the handshake completed.
+	// This must be done here (in driveHandshakeLoop's context), NOT in
+	// handleCryptoFrame, because calling session.HandshakeComplete()
+	// from the recvLoop would deadlock if driveHandshakeLoop is holding
+	// the TLS session mutex inside HandleCryptoData → HandleData.
+	session := h.keyStore.TLSSession()
+	if session != nil && session.HandshakeComplete() && !h.handshakeComplete {
+		h.handshakeComplete = true
+		h.conn.SetState(StateEstablished)
+
+		// Server: handshake confirmed when complete, send HANDSHAKE_DONE
+		if h.conn.IsServer() {
+			h.handshakeConfirmed = true
+			h.pendingHandshakeDone = true
+			h.recovery.SetHandshakeConfirmed(true)
+		}
+	}
+
 	return nil
 }
 
@@ -463,6 +475,7 @@ func (h *FrameHandler) GenerateControlFrames(pnSpace PNSpace) []frames.Frame {
 
 	// HANDSHAKE_DONE (server only, once)
 	if h.pendingHandshakeDone && pnSpace == PNSpaceApplication {
+		fmt.Printf("[FrameHandler] Generating HANDSHAKE_DONE frame for PNSpaceApplication\n")
 		out = append(out, &frames.HandshakeDone{})
 		h.pendingHandshakeDone = false
 	}

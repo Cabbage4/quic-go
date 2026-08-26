@@ -455,17 +455,25 @@ func (c *Conn) driveHandshakeLoop() {
 			return
 		}
 
-		// Feed any queued CRYPTO data from received packets to TLS,
-		// then drive the TLS handshake forward (Start/processEvents).
+		// Drive the TLS handshake forward (Start on first call, then processEvents)
+		// This must happen BEFORE feeding CRYPTO data: the server's QUICConn
+		// must be Start()-ed before HandleData can process the ClientHello.
+		if err := c.coordinator.DriveHandshake(); err != nil {
+			log.Printf("quic: handshake error: %v", err)
+			return
+		}
+
+		// Feed any queued CRYPTO data from received packets to TLS.
 		// This must happen in the same goroutine to avoid deadlock
 		// with the TLS session mutex.
 		if err := c.frameHandler.FlushPendingCryptoData(); err != nil {
 			log.Printf("quic: flush crypto data: %v", err)
 		}
 
-		// Drive the TLS handshake forward
+		// Drive TLS again after feeding CRYPTO data to process events
+		// (e.g., server produces ServerHello after receiving ClientHello)
 		if err := c.coordinator.DriveHandshake(); err != nil {
-			log.Printf("quic: handshake error: %v", err)
+			log.Printf("quic: handshake error after crypto feed: %v", err)
 			return
 		}
 

@@ -213,6 +213,7 @@ func (p *PacketIO) SendPacket(level crypto.EncryptionLevel, frs []frames.Frame) 
 	}
 
 	// Send via UDP
+	fmt.Printf("[PacketIO] Sending packet: level=%s, pn=%d, len=%d\n", level, pn, len(protected))
 	_, err = p.writeUDP(protected)
 	if err != nil {
 		return pn, fmt.Errorf("connection: UDP write failed: %w", err)
@@ -439,6 +440,7 @@ func (p *PacketIO) processPacket(pkt []byte) error {
 
 	// Determine if long or short header
 	isLong := pkt[0]&0x80 != 0
+	fmt.Printf("[PacketIO] processPacket: len=%d, isLong=%v, firstByte=0x%02x\n", len(pkt), isLong, pkt[0])
 
 	if isLong {
 		return p.processLongHeaderPacket(pkt)
@@ -692,10 +694,6 @@ func (p *PacketIO) unprotectLongHeader(pkt []byte, pnOffset int, level crypto.En
 		return nil, 0, 0, fmt.Errorf("connection: no recv keys for level %s", level)
 	}
 
-	// Phase 1: Remove header protection with pnLen=4 (maximum)
-	// We use pnLen=4 because the HP sample is at pnOffset+4 regardless of actual PN length.
-	// The mask covers byte 0 (4 bits for long header) + up to 4 PN bytes.
-	// After removal, byte 0's lower bits and the PN field are unmasked.
 	pktCopy := make([]byte, len(pkt))
 	copy(pktCopy, pkt)
 
@@ -705,13 +703,27 @@ func (p *PacketIO) unprotectLongHeader(pkt []byte, pnOffset int, level crypto.En
 		return nil, 0, 0, fmt.Errorf("crypto: packet too short for header protection (need %d, have %d)", sampleEnd, len(pktCopy))
 	}
 
-	// Remove HP using pnLen=4 (masks byte0 + 4 PN bytes, but actual PN may be shorter)
-	if err := crypto.RemoveHeaderProtection(pktCopy, pnOffset, 4, true, ks.HPKey, ks.AEAD.CipherSuiteID()); err != nil {
-		return nil, 0, 0, fmt.Errorf("crypto: header protection removal failed: %w", err)
+	// Two-phase unprotection (RFC 9001 §5.4):
+	// Phase 1: Generate the mask and unmask byte 0 to discover the real PN length.
+	// The sample is at pnOffset+4 (always 4 bytes, regardless of actual PN length).
+	// The mask is 5 bytes: mask[0] for byte 0, mask[1..4] for up to 4 PN bytes.
+	// We only unmask byte 0 and the actual PN bytes, NOT all 4 bytes,
+	// to avoid corrupting ciphertext bytes when the real PN is shorter than 4.
+	mask, err := crypto.GenerateHeaderProtectionMask(ks.HPKey, pktCopy, pnOffset, ks.AEAD.CipherSuiteID())
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("crypto: header protection mask generation failed: %w", err)
 	}
+
+	// Unmask byte 0's low 4 bits (long header: reserved bits + PN length)
+	pktCopy[0] ^= mask[0] & 0x0f
 
 	// Phase 2: Read real pnLen from unmasked byte 0
 	realPNLen := int(pktCopy[0]&0x03) + 1
+
+	// Unmask only the actual PN bytes (not all 4)
+	for i := 0; i < realPNLen; i++ {
+		pktCopy[pnOffset+i] ^= mask[1+i]
+	}
 
 	// Read real truncated PN
 	realTruncatedPN := readTruncatedPN(pktCopy, pnOffset, realPNLen)
@@ -765,13 +777,24 @@ func (p *PacketIO) unprotectShortHeader(pkt []byte, pnOffset int, level crypto.E
 		return nil, 0, 0, fmt.Errorf("crypto: packet too short for header protection (need %d, have %d)", sampleEnd, len(pktCopy))
 	}
 
-	// Phase 1: Remove HP with pnLen=4
-	if err := crypto.RemoveHeaderProtection(pktCopy, pnOffset, 4, false, ks.HPKey, ks.AEAD.CipherSuiteID()); err != nil {
-		return nil, 0, 0, fmt.Errorf("crypto: header protection removal failed: %w", err)
+	// Two-phase unprotection (RFC 9001 §5.4):
+	// Phase 1: Generate the mask and unmask byte 0 to discover the real PN length.
+	// For short headers, 5 bits of byte 0 are masked (reserved + key phase + PN length).
+	mask, err := crypto.GenerateHeaderProtectionMask(ks.HPKey, pktCopy, pnOffset, ks.AEAD.CipherSuiteID())
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("crypto: header protection mask generation failed: %w", err)
 	}
+
+	// Unmask byte 0's low 5 bits (short header: reserved + key phase + PN length)
+	pktCopy[0] ^= mask[0] & 0x1f
 
 	// Phase 2: Read real pnLen from unmasked byte 0
 	realPNLen := int(pktCopy[0]&0x03) + 1
+
+	// Unmask only the actual PN bytes (not all 4)
+	for i := 0; i < realPNLen; i++ {
+		pktCopy[pnOffset+i] ^= mask[1+i]
+	}
 
 	// Read real truncated PN
 	realTruncatedPN := readTruncatedPN(pktCopy, pnOffset, realPNLen)
@@ -970,6 +993,7 @@ func (p *PacketIO) FlushPendingControlFrames() error {
 			continue
 		}
 
+		fmt.Printf("[PacketIO] Sending CRYPTO data: level=%s, len=%d\n", level, len(data))
 		_, err := p.SendPacket(level, []frames.Frame{
 			&frames.Crypto{Offset: 0, Data: data},
 		})

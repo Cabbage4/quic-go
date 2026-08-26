@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 // TLSConfig provides configuration for a QUIC TLS session.
@@ -66,7 +67,10 @@ type TLSSession struct {
 	rxCryptoOffset map[EncryptionLevel]uint64
 
 	// Handshake state
-	handshakeComplete      bool
+	// handshakeComplete is stored as an atomic for lock-free reads from
+	// handleIncoming (recvLoop) to avoid deadlocking with driveHandshakeLoop
+	// which holds mu while inside HandleCryptoData → HandleData.
+	handshakeComplete      atomic.Bool
 	handshakeConfirmed     bool
 	started                bool
 	receivedTransportParams []byte
@@ -154,6 +158,7 @@ func (s *TLSSession) Start(ctx context.Context) error {
 			return fmt.Errorf("crypto: TLS Start failed: %w", err)
 		}
 		s.started = true
+		fmt.Printf("[TLS] Start: started=%v, isClient=%v\n", s.started, s.isClient)
 	}
 
 	return s.processEvents()
@@ -170,6 +175,8 @@ func (s *TLSSession) HandleCryptoData(level EncryptionLevel, data []byte) error 
 	// Record the offset for this data
 	offset := s.rxCryptoOffset[level]
 	s.rxCryptoOffset[level] = offset + uint64(len(data))
+
+	fmt.Printf("[TLS] HandleCryptoData: level=%s, offset=%d, len=%d\n", level, offset, len(data))
 
 	// Feed the data to the TLS stack
 	if err := s.conn.HandleData(tlsQUICLevel(level), data); err != nil {
@@ -201,48 +208,52 @@ func (s *TLSSession) processEvents() error {
 		case tls.QUICNoEvent:
 			return nil
 
-	case tls.QUICSetReadSecret:
-		level := tlsToQUICLevel(event.Level)
-		secret := event.Data
-		csID := CipherSuiteID(event.Suite)
-		s.cipherSuiteID = csID
-		cs, ok := GetCipherSuite(csID)
-		if !ok {
-			cs = DefaultCipherSuite()
-		}
-		keys := DeriveTrafficKeys(secret, cs)
-		ks, err := NewKeySet(keys, cs.ID, true)
-		if err != nil {
-			return fmt.Errorf("crypto: failed to create read key set: %w", err)
-		}
-		if s.onReadKeys != nil {
-			s.onReadKeys(level, ks)
-		}
+		case tls.QUICSetReadSecret:
+			level := tlsToQUICLevel(event.Level)
+			secret := event.Data
+			csID := CipherSuiteID(event.Suite)
+			s.cipherSuiteID = csID
+			cs, ok := GetCipherSuite(csID)
+			if !ok {
+				cs = DefaultCipherSuite()
+			}
+			keys := DeriveTrafficKeys(secret, cs)
+			ks, err := NewKeySet(keys, cs.ID, true)
+			if err != nil {
+				return fmt.Errorf("crypto: failed to create read key set: %w", err)
+			}
+			fmt.Printf("[TLS] QUICSetReadSecret: level=%s, suite=%d\n", level, csID)
+			if s.onReadKeys != nil {
+				s.onReadKeys(level, ks)
+			}
 
-	case tls.QUICSetWriteSecret:
-		level := tlsToQUICLevel(event.Level)
-		secret := event.Data
-		csID := CipherSuiteID(event.Suite)
-		s.cipherSuiteID = csID
-		cs, ok := GetCipherSuite(csID)
-		if !ok {
-			cs = DefaultCipherSuite()
-		}
-		keys := DeriveTrafficKeys(secret, cs)
-		ks, err := NewKeySet(keys, cs.ID, true)
-		if err != nil {
-			return fmt.Errorf("crypto: failed to create write key set: %w", err)
-		}
-		if s.onWriteKeys != nil {
-			s.onWriteKeys(level, ks)
-		}
+		case tls.QUICSetWriteSecret:
+			level := tlsToQUICLevel(event.Level)
+			secret := event.Data
+			csID := CipherSuiteID(event.Suite)
+			s.cipherSuiteID = csID
+			cs, ok := GetCipherSuite(csID)
+			if !ok {
+				cs = DefaultCipherSuite()
+			}
+			keys := DeriveTrafficKeys(secret, cs)
+			ks, err := NewKeySet(keys, cs.ID, true)
+			if err != nil {
+				return fmt.Errorf("crypto: failed to create write key set: %w", err)
+			}
+			fmt.Printf("[TLS] QUICSetWriteSecret: level=%s, suite=%d\n", level, csID)
+			if s.onWriteKeys != nil {
+				s.onWriteKeys(level, ks)
+			}
 
-	case tls.QUICWriteData:
-		level := tlsToQUICLevel(event.Level)
-		s.txCryptoData[level] = append(s.txCryptoData[level], event.Data...)
+		case tls.QUICWriteData:
+			level := tlsToQUICLevel(event.Level)
+			fmt.Printf("[TLS] QUICWriteData: level=%s, len=%d\n", level, len(event.Data))
+			s.txCryptoData[level] = append(s.txCryptoData[level], event.Data...)
 
-	case tls.QUICHandshakeDone:
-		s.handshakeComplete = true
+		case tls.QUICHandshakeDone:
+			fmt.Printf("[TLS] QUICHandshakeDone\n")
+			s.handshakeComplete.Store(true)
 			// For a server, handshake is confirmed when complete
 			if !s.isClient {
 				s.handshakeConfirmed = true
@@ -253,6 +264,7 @@ func (s *TLSSession) processEvents() error {
 			// (RFC 9001 §4.6.2)
 
 		case tls.QUICTransportParameters:
+			fmt.Printf("[TLS] QUICTransportParameters: len=%d\n", len(event.Data))
 			s.receivedTransportParams = event.Data
 			if s.onTransportParams != nil {
 				// Copy data since it's owned by crypto/tls
@@ -262,12 +274,14 @@ func (s *TLSSession) processEvents() error {
 			}
 
 		case tls.QUICTransportParametersRequired:
+			fmt.Printf("[TLS] QUICTransportParametersRequired\n")
 			// We need to provide transport parameters
 			if len(s.config.TransportParameters) > 0 {
 				s.conn.SetTransportParameters(s.config.TransportParameters)
 			}
 
 		case tls.QUICErrorEvent:
+			fmt.Printf("[TLS] QUICErrorEvent: %v\n", event.Err)
 			s.tlsErr = event.Err
 			return fmt.Errorf("crypto: TLS error: %w", event.Err)
 
@@ -301,10 +315,10 @@ func (s *TLSSession) SetTransportParamsCallback(cb func([]byte)) {
 
 // HandshakeComplete returns true if the TLS handshake is complete
 // (both Finished sent and verified, RFC 9001 §4.1.2).
+// This uses an atomic read (no mutex) to allow lock-free access from
+// the recvLoop without deadlocking with driveHandshakeLoop.
 func (s *TLSSession) HandshakeComplete() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.handshakeComplete
+	return s.handshakeComplete.Load()
 }
 
 // HandshakeConfirmed returns true if the handshake is confirmed.
