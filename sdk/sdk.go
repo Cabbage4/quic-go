@@ -64,9 +64,20 @@ func (l *Listener) Addr() net.Addr {
 }
 
 // Accept waits for and returns the next incoming connection.
+// In TLS mode, this blocks until the TLS handshake completes.
 func (l *Listener) Accept() (*Conn, error) {
 	select {
 	case c := <-l.acceptCh:
+		// Wait for handshake to complete
+		if c.config.TLSMode {
+			select {
+			case <-c.handshakeDone:
+			case <-c.closeCh:
+				return nil, fmt.Errorf("sdk: connection closed during handshake")
+			case <-l.done:
+				return nil, fmt.Errorf("sdk: listener closed")
+			}
+		}
 		return c, nil
 	case <-l.done:
 		return nil, fmt.Errorf("sdk: listener closed")
@@ -204,9 +215,12 @@ func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, radd
 		sendQueue:      make(chan []byte, 256),
 		acceptStreamCh: make(chan *Stream, 64),
 		closeCh:        make(chan struct{}),
+		handshakeDone:  make(chan struct{}),
 		isServer:       true,
 		streams:        make(map[uint64]*Stream),
 		streamsMu:      newNetMutex(),
+		nextServerBidi: 1, // server bidi streams start at 1
+		nextServerUni:  3, // server uni streams start at 3
 	}
 
 	// Initialize subsystems
@@ -426,6 +440,12 @@ func (c *Conn) driveHandshakeLoop() {
 		// Check if handshake is complete
 		session := c.keyStore.TLSSession()
 		if session != nil && session.HandshakeComplete() {
+			// Signal that the handshake is done (for Accept() and Stream.Write)
+			select {
+			case <-c.handshakeDone:
+			default:
+				close(c.handshakeDone)
+			}
 			// Handshake complete — flush any remaining CRYPTO data.
 			if err := c.packetIO.FlushPendingControlFrames(); err != nil {
 				log.Printf("quic: flush after handshake: %v", err)
@@ -512,9 +532,12 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 		sendQueue:      make(chan []byte, 256),
 		acceptStreamCh: make(chan *Stream, 64),
 		closeCh:        make(chan struct{}),
+		handshakeDone:  make(chan struct{}),
 		isServer:       false,
 		streams:        make(map[uint64]*Stream),
 		streamsMu:      newNetMutex(),
+		nextClientBidi: 0, // client bidi streams start at 0
+		nextClientUni:  2, // client uni streams start at 2
 	}
 
 	// Initialize subsystems
@@ -554,6 +577,12 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 		for {
 			session := c.keyStore.TLSSession()
 			if session != nil && session.HandshakeComplete() {
+				// Signal handshakeDone for Stream.Write
+				select {
+				case <-c.handshakeDone:
+				default:
+					close(c.handshakeDone)
+				}
 				break
 			}
 			if time.Now().After(deadline) {
@@ -698,10 +727,13 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 		if err := c.packetIO.RecvDatagram(data); err != nil {
 			log.Printf("quic: packet receive error: %v", err)
 		}
-		// Do NOT call flushPendingControlFrames() here — it would
-		// deadlock with driveHandshakeLoop's HandleCryptoData which
-		// holds the TLS session mutex. The driveHandshakeLoop handles
-		// flushing control frames and CRYPTO data.
+		// After the handshake is complete, driveHandshakeLoop has exited
+		// and there is no risk of deadlock with the TLS session mutex.
+		// Flush ACK and flow control frames in response to received data.
+		session := c.keyStore.TLSSession()
+		if session != nil && session.HandshakeComplete() {
+			c.packetIO.FlushPendingControlFrames()
+		}
 		// Deliver any received stream data to SDK-level Stream wrappers
 		c.deliverReceivedStreamData()
 		return
@@ -1097,14 +1129,6 @@ func (c *Conn) openStream(bidi bool) (*Stream, error) {
 
 	if c.streams == nil {
 		c.streams = make(map[uint64]*Stream)
-		// Initialize stream ID counters based on role
-		if c.isServer {
-			c.nextServerBidi = 1
-			c.nextServerUni = 3
-		} else {
-			c.nextClientBidi = 0
-			c.nextClientUni = 2
-		}
 	}
 
 	// Allocate stream ID
@@ -1241,9 +1265,10 @@ func (s *Stream) Write(data []byte) (int, error) {
 	// In TLS mode, send through PacketIO for encryption at Application level
 	if s.conn.config.TLSMode && s.conn.packetIO != nil {
 		// Wait for handshake to complete before sending application data
-		session := s.conn.keyStore.TLSSession()
-		if session != nil && !session.HandshakeComplete() {
-			return 0, fmt.Errorf("sdk: handshake not complete")
+		select {
+		case <-s.conn.handshakeDone:
+		case <-s.conn.closeCh:
+			return 0, fmt.Errorf("sdk: connection closed")
 		}
 
 		frame := &frames.Stream{
@@ -1309,7 +1334,26 @@ func (s *Stream) Close() error {
 	}
 	s.writeClosed = true
 
-	// Send a STREAM frame with FIN and empty data
+	// In TLS mode, send STREAM+FIN via PacketIO for encryption
+	if s.conn.config.TLSMode && s.conn.packetIO != nil {
+		select {
+		case <-s.conn.handshakeDone:
+		case <-s.conn.closeCh:
+			return fmt.Errorf("sdk: connection closed")
+		}
+
+		frame := &frames.Stream{
+			StreamID: s.id,
+			Offset:   s.writeOffset,
+			Data:     nil,
+			Fin:      true,
+		}
+		_, err := s.conn.packetIO.SendPacket(crypto.EncryptionApplication,
+			[]frames.Frame{frame})
+		return err
+	}
+
+	// Plaintext mode: build STREAM frame with FIN manually
 	frameType := byte(0x08 | 0x04 | 0x02 | 0x01) // STREAM with FIN, OFF, LEN
 
 	buf := []byte{frameType}

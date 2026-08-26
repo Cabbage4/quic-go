@@ -184,6 +184,10 @@ type Conn struct {
 	// Is this a server-side connection?
 	isServer bool
 
+	// handshakeDone is closed when the TLS handshake completes.
+	// Used by Accept() to block until the connection is ready.
+	handshakeDone chan struct{}
+
 	// Stream management (SDK-level wrappers)
 	streams        map[uint64]*Stream
 	streamsMu      netMutex
