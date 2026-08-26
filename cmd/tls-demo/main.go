@@ -29,7 +29,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/Cabbage4/quic-go/sdk"
+	"github.com/Cabbage4/quic-go"
 )
 
 func main() {
@@ -88,7 +88,7 @@ func runServer(addr string) {
 		log.Fatalf("generate cert: %v", err)
 	}
 
-	config := &sdk.Config{
+	config := &quic.Config{
 		TLSMode:         true,
 		TLSCertificates: []tls.Certificate{cert},
 		ALPNProtocols:   []string{"echo"},
@@ -98,7 +98,7 @@ func runServer(addr string) {
 		ConnIDLength:    8,
 	}
 
-	listener, err := sdk.Listen("udp", addr, config)
+	listener, err := quic.Listen("udp", addr, config)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
@@ -119,7 +119,7 @@ func runServer(addr string) {
 	}
 }
 
-func handleConn(conn *sdk.Conn) {
+func handleConn(conn *quic.Conn) {
 	defer conn.Close()
 
 	fmt.Printf("connection from %s\n", conn.RemoteAddr())
@@ -133,7 +133,7 @@ func handleConn(conn *sdk.Conn) {
 	}
 }
 
-func handleStream(stream *sdk.Stream) {
+func handleStream(stream *quic.Stream) {
 	defer stream.Close()
 
 	buf := make([]byte, 65536)
@@ -166,7 +166,7 @@ func runClient(addr string) {
 		log.Fatalf("resolve: %v", err)
 	}
 
-	config := &sdk.Config{
+	config := &quic.Config{
 		TLSMode:            true,
 		ServerName:         "localhost",
 		InsecureSkipVerify: true, // self-signed cert
@@ -178,7 +178,7 @@ func runClient(addr string) {
 	}
 
 	fmt.Printf("Dialing %s with QUIC+TLS...\n", addr)
-	conn, err := sdk.Dial("udp", udpAddr.String(), config)
+	conn, err := quic.Dial("udp", udpAddr.String(), config)
 	if err != nil {
 		log.Fatalf("dial: %v", err)
 	}

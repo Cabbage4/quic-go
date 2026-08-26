@@ -35,12 +35,12 @@ This project implements the fundamental building blocks of the QUIC transport pr
 
 ## SDK Usage
 
-The `sdk/` package provides a high-level API inspired by Go's `net` package:
+The root `quic` package provides a high-level API inspired by Go's `net` package:
 
 ### Server
 
 ```go
-listener, err := sdk.Listen("udp", "127.0.0.1:4433", nil)
+listener, err := quic.Listen("udp", "127.0.0.1:4433", nil)
 if err != nil {
     log.Fatal(err)
 }
@@ -54,7 +54,7 @@ for {
     go handleConn(conn)
 }
 
-func handleConn(conn *sdk.Conn) {
+func handleConn(conn *quic.Conn) {
     defer conn.Close()
     for {
         stream, err := conn.AcceptStream()
@@ -69,7 +69,7 @@ func handleConn(conn *sdk.Conn) {
 ### Client
 
 ```go
-conn, err := sdk.Dial("udp", "127.0.0.1:4433", nil)
+conn, err := quic.Dial("udp", "127.0.0.1:4433", nil)
 if err != nil {
     log.Fatal(err)
 }
@@ -89,7 +89,7 @@ fmt.Println(string(buf[:n]))
 ### Config
 
 ```go
-config := &sdk.Config{
+config := &quic.Config{
     MaxIdleTimeout:     30 * time.Second,
     MaxStreamData:      1 << 20,  // 1 MiB per stream
     MaxConnectionData:  10 << 20, // 10 MiB per connection
@@ -143,9 +143,9 @@ Demo complete!
 The SDK API mirrors Go's standard `net` package — set `TLSMode: true` in `Config` to enable TLS:
 
 ```go
-import "github.com/Cabbage4/quic-go/sdk"
+import "github.com/Cabbage4/quic-go"
 
-config := &sdk.Config{
+config := &quic.Config{
     TLSMode:           true,              // Enable TLS 1.3
     TLSCertificates:   []tls.Certificate{cert},  // Server cert (not needed on client)
     ServerName:        "example.com",     // Client SNI (client only)
@@ -182,7 +182,7 @@ import (
     "log"
     "time"
 
-    "github.com/Cabbage4/quic-go/sdk"
+    "github.com/Cabbage4/quic-go"
 )
 
 func main() {
@@ -192,7 +192,7 @@ func main() {
         log.Fatal(err)
     }
 
-    config := &sdk.Config{
+    config := &quic.Config{
         TLSMode:         true,
         TLSCertificates: []tls.Certificate{cert},
         ALPNProtocols:   []string{"myapp"},
@@ -200,7 +200,7 @@ func main() {
         ConnIDLength:    8,
     }
 
-    listener, err := sdk.Listen("udp", "0.0.0.0:443", config)
+    listener, err := quic.Listen("udp", "0.0.0.0:443", config)
     if err != nil {
         log.Fatal(err)
     }
@@ -216,7 +216,7 @@ func main() {
     }
 }
 
-func handleConnection(conn *sdk.Conn) {
+func handleConnection(conn *quic.Conn) {
     defer conn.Close()
     for {
         stream, err := conn.AcceptStream()
@@ -227,7 +227,7 @@ func handleConnection(conn *sdk.Conn) {
     }
 }
 
-func handleStream(stream *sdk.Stream) {
+func handleStream(stream *quic.Stream) {
     defer stream.Close()
     buf := make([]byte, 4096)
     for {
@@ -249,11 +249,11 @@ import (
     "log"
     "time"
 
-    "github.com/Cabbage4/quic-go/sdk"
+    "github.com/Cabbage4/quic-go"
 )
 
 func main() {
-    config := &sdk.Config{
+    config := &quic.Config{
         TLSMode:            true,
         ServerName:         "example.com",
         ALPNProtocols:      []string{"myapp"},
@@ -262,7 +262,7 @@ func main() {
         InsecureSkipVerify: true, // Skip cert verification in tests; configure RootCAs in production
     }
 
-    conn, err := sdk.Dial("udp", "example.com:443", config)
+    conn, err := quic.Dial("udp", "example.com:443", config)
     if err != nil {
         log.Fatal(err)
     }
@@ -289,17 +289,17 @@ func main() {
 Set `TLSMode` to `false` (or leave it unset) to use plaintext mode, where packets are not encrypted — useful for protocol learning and debugging:
 
 ```go
-config := &sdk.Config{
+config := &quic.Config{
     // TLSMode: false (default — no need to set explicitly)
     MaxIdleTimeout: 30 * time.Second,
     ConnIDLength:   8,
 }
 
 // Server
-listener, _ := sdk.Listen("udp", "127.0.0.1:8443", config)
+listener, _ := quic.Listen("udp", "127.0.0.1:8443", config)
 
 // Client
-conn, _ := sdk.Dial("udp", "127.0.0.1:8443", config)
+conn, _ := quic.Dial("udp", "127.0.0.1:8443", config)
 ```
 
 ### TLS Mode vs Plaintext Mode
@@ -321,7 +321,7 @@ In TLS mode, data flows through this pipeline:
 ```
 Application data
     ↓
-SDK (sdk.Conn / sdk.Stream)
+SDK (quic.Conn / quic.Stream)
     ↓ calls PacketIO.SendPacket()
 Connection layer
     ├── Frame encoding (frames.Encode)
@@ -405,10 +405,10 @@ quic-go/
 │   ├── loss_detection.go  # RTT estimation, PTO, loss detection algorithms
 │   ├── congestion.go      # NewReno-like congestion control
 │   └── recovery_test.go   # Tests
-├── sdk/              # High-level SDK (server & client)
-│   ├── config.go     # Config, Listener, Conn, Stream types
-│   ├── sdk.go        # Implementation
-│   └── sdk_test.go   # Tests
+# High-level QUIC API (root package, was sdk/)
+config.go     # Config, Listener, Conn, Stream types (root)
+
+
 ├── cmd/
 │   ├── demo/         # Protocol-level interactive demo
 │   ├── echo/         # SDK echo server/client example

@@ -1,4 +1,4 @@
-package sdk
+package quic
 
 import (
 	"crypto/rand"

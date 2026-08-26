@@ -35,12 +35,12 @@
 
 ## SDK 用法
 
-`sdk/` 包提供了一套仿照 Go 标准库 `net` 包设计的高层 API：
+根目录 `quic` 包提供了一套仿照 Go 标准库 `net` 包设计的高层 API：
 
 ### 服务端
 
 ```go
-listener, err := sdk.Listen("udp", "127.0.0.1:4433", nil)
+listener, err := quic.Listen("udp", "127.0.0.1:4433", nil)
 if err != nil {
     log.Fatal(err)
 }
@@ -54,7 +54,7 @@ for {
     go handleConn(conn)
 }
 
-func handleConn(conn *sdk.Conn) {
+func handleConn(conn *quic.Conn) {
     defer conn.Close()
     for {
         stream, err := conn.AcceptStream()
@@ -69,7 +69,7 @@ func handleConn(conn *sdk.Conn) {
 ### 客户端
 
 ```go
-conn, err := sdk.Dial("udp", "127.0.0.1:4433", nil)
+conn, err := quic.Dial("udp", "127.0.0.1:4433", nil)
 if err != nil {
     log.Fatal(err)
 }
@@ -89,7 +89,7 @@ fmt.Println(string(buf[:n]))
 ### 配置
 
 ```go
-config := &sdk.Config{
+config := &quic.Config{
     MaxIdleTimeout:     30 * time.Second,
     MaxStreamData:      1 << 20,  // 每流 1 MiB
     MaxConnectionData:  10 << 20, // 每连接 10 MiB
@@ -143,9 +143,9 @@ Demo complete!
 SDK 的 API 与 Go 标准 `net` 包一致——只需在 `Config` 中设置 `TLSMode: true` 即可启用 TLS：
 
 ```go
-import "github.com/Cabbage4/quic-go/sdk"
+import "github.com/Cabbage4/quic-go"
 
-config := &sdk.Config{
+config := &quic.Config{
     TLSMode:           true,              // 启用 TLS 1.3
     TLSCertificates:   []tls.Certificate{cert},  // 服务端证书（客户端不需要）
     ServerName:        "example.com",     // 客户端 SNI（仅客户端）
@@ -182,7 +182,7 @@ import (
     "log"
     "time"
 
-    "github.com/Cabbage4/quic-go/sdk"
+    "github.com/Cabbage4/quic-go"
 )
 
 func main() {
@@ -192,7 +192,7 @@ func main() {
         log.Fatal(err)
     }
 
-    config := &sdk.Config{
+    config := &quic.Config{
         TLSMode:         true,
         TLSCertificates: []tls.Certificate{cert},
         ALPNProtocols:   []string{"myapp"},
@@ -200,7 +200,7 @@ func main() {
         ConnIDLength:    8,
     }
 
-    listener, err := sdk.Listen("udp", "0.0.0.0:443", config)
+    listener, err := quic.Listen("udp", "0.0.0.0:443", config)
     if err != nil {
         log.Fatal(err)
     }
@@ -216,7 +216,7 @@ func main() {
     }
 }
 
-func handleConnection(conn *sdk.Conn) {
+func handleConnection(conn *quic.Conn) {
     defer conn.Close()
     for {
         stream, err := conn.AcceptStream()
@@ -227,7 +227,7 @@ func handleConnection(conn *sdk.Conn) {
     }
 }
 
-func handleStream(stream *sdk.Stream) {
+func handleStream(stream *quic.Stream) {
     defer stream.Close()
     buf := make([]byte, 4096)
     for {
@@ -249,11 +249,11 @@ import (
     "log"
     "time"
 
-    "github.com/Cabbage4/quic-go/sdk"
+    "github.com/Cabbage4/quic-go"
 )
 
 func main() {
-    config := &sdk.Config{
+    config := &quic.Config{
         TLSMode:            true,
         ServerName:         "example.com",
         ALPNProtocols:      []string{"myapp"},
@@ -262,7 +262,7 @@ func main() {
         InsecureSkipVerify: true, // 测试时跳过证书验证；生产环境应配置 RootCAs
     }
 
-    conn, err := sdk.Dial("udp", "example.com:443", config)
+    conn, err := quic.Dial("udp", "example.com:443", config)
     if err != nil {
         log.Fatal(err)
     }
@@ -289,17 +289,17 @@ func main() {
 将 `TLSMode` 设为 `false`（或不设置）即使用明文模式，数据包不加密——适用于协议学习和调试：
 
 ```go
-config := &sdk.Config{
+config := &quic.Config{
     // TLSMode: false（默认值，无需显式设置）
     MaxIdleTimeout: 30 * time.Second,
     ConnIDLength:   8,
 }
 
 // 服务端
-listener, _ := sdk.Listen("udp", "127.0.0.1:8443", config)
+listener, _ := quic.Listen("udp", "127.0.0.1:8443", config)
 
 // 客户端
-conn, _ := sdk.Dial("udp", "127.0.0.1:8443", config)
+conn, _ := quic.Dial("udp", "127.0.0.1:8443", config)
 ```
 
 ### TLS 模式 vs 明文模式
@@ -321,7 +321,7 @@ TLS 模式下数据流经以下管道：
 ```
 应用层数据
     ↓
-SDK (sdk.Conn / sdk.Stream)
+SDK (quic.Conn / quic.Stream)
     ↓ 调用 PacketIO.SendPacket()
 Connection 层
     ├── 帧编码 (frames.Encode)
@@ -405,10 +405,10 @@ quic-go/
 │   ├── loss_detection.go  # RTT 估计、PTO、丢包检测算法
 │   ├── congestion.go      # 类 NewReno 拥塞控制
 │   └── recovery_test.go   # 测试
-├── sdk/              # 高层 SDK（服务端与客户端）
+# 高层 QUIC API（根目录包，原 sdk/）
 │   ├── config.go     # Config、Listener、Conn、Stream 类型
-│   ├── sdk.go        # 实现
-│   └── sdk_test.go   # 测试
+
+
 ├── cmd/
 │   ├── demo/         # 协议级交互 demo
 │   ├── echo/         # SDK echo 服务端/客户端示例

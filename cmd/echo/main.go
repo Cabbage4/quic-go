@@ -16,7 +16,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/Cabbage4/quic-go/sdk"
+	"github.com/Cabbage4/quic-go"
 )
 
 func main() {
@@ -39,8 +39,8 @@ func main() {
 }
 
 func runServer(addr string) {
-	config := sdk.DefaultConfig()
-	listener, err := sdk.Listen("udp", addr, config)
+	config := quic.DefaultConfig()
+	listener, err := quic.Listen("udp", addr, config)
 	if err != nil {
 		log.Fatalf("Listen failed: %v", err)
 	}
@@ -59,7 +59,7 @@ func runServer(addr string) {
 	}
 }
 
-func handleConn(conn *sdk.Conn) {
+func handleConn(conn *quic.Conn) {
 	defer conn.Close()
 
 	fmt.Printf("Connection from %s\n", conn.RemoteAddr())
@@ -70,7 +70,7 @@ func handleConn(conn *sdk.Conn) {
 			return
 		}
 
-		go func(s *sdk.Stream) {
+		go func(s *quic.Stream) {
 			defer s.Close()
 			buf := make([]byte, 4096)
 			for {
@@ -95,10 +95,10 @@ func handleConn(conn *sdk.Conn) {
 }
 
 func runClient(addr, message string) {
-	config := sdk.DefaultConfig()
+	config := quic.DefaultConfig()
 
 	fmt.Printf("Dialing %s...\n", addr)
-	conn, err := sdk.Dial("udp", addr, config)
+	conn, err := quic.Dial("udp", addr, config)
 	if err != nil {
 		log.Fatalf("Dial failed: %v", err)
 	}

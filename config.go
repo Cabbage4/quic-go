@@ -1,4 +1,4 @@
-// Package sdk provides a high-level QUIC SDK for building servers and clients.
+// Package quic provides a high-level QUIC SDK for building servers and clients.
 //
 // The SDK wraps the low-level protocol modules (connection, stream, frames,
 // header, ack, path, token, etc.) into a simple API inspired by Go's net
@@ -6,7 +6,7 @@
 //
 // Server:
 //
-//	listener, err := sdk.Listen("udp", addr, &sdk.Config{...})
+//	listener, err := quic.Listen("udp", addr, &quic.Config{...})
 //	for {
 //		conn, err := listener.Accept()
 //		// handle conn
@@ -14,7 +14,7 @@
 //
 // Client:
 //
-//	conn, err := sdk.Dial("udp", serverAddr, &sdk.Config{...})
+//	conn, err := quic.Dial("udp", serverAddr, &quic.Config{...})
 //	stream, err := conn.OpenStream()
 //	stream.Write(data)
 //
@@ -29,7 +29,7 @@
 // initial key derivation from DCID, TLS 1.3 handshake via crypto/tls
 // QUICConn, AEAD packet protection + header protection, and key updates.
 // See QUICKSTART.md for a TLS quick start guide.
-package sdk
+package quic
 
 import (
 	"crypto/tls"
