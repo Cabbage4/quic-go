@@ -175,19 +175,24 @@ func TestShouldSendAck(t *testing.T) {
 		t.Error("should not send ACK when no packets received")
 	}
 
+	// First ack-eliciting packet: pending arms, but delayed-ACK
+	// (ackFrequency=2) holds the immediate send back. An explicit
+	// force-ACK request (ShouldSendAck(true)) still returns true.
 	tr.ReceivedPacket(0, true)
-
-	// ACK-eliciting packet → immediate ACK
+	if tr.ShouldSendAck(false) {
+		t.Error("should NOT send ACK after 1 ack-eliciting packet (delayed)")
+	}
 	if !tr.ShouldSendAck(true) {
-		t.Error("should send ACK for ACK-eliciting packet")
+		t.Error("force-ACK (explicit request) should return true")
 	}
 
-	// Non-eliciting but pending → should send
+	// Second ack-eliciting packet: counter reaches ackFrequency → send.
+	tr.ReceivedPacket(1, true)
 	if !tr.ShouldSendAck(false) {
-		t.Error("should send ACK when pending")
+		t.Error("should send ACK after ackFrequency ack-eliciting packets")
 	}
 
-	// After marking as acked → should not send
+	// After marking as acked → should not send, counter reset.
 	tr.MarkAcked()
 	if tr.HasPending() {
 		t.Error("should not have pending after MarkAcked")

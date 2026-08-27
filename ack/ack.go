@@ -81,6 +81,11 @@ type Tracker struct {
 // ackFrequency is the number of ack-eliciting packets to receive before
 // sending an ACK (delayed ACK / ACK coalescing). 2 = ACK every other
 // ack-eliciting packet, halving the ACK packet count vs frequency=1.
+// (3 was tried: no measurable gain on the request/response loopback
+// workload — ACKs are needed promptly for the tight request-response
+// loop, so further coalescing just delays the sender. 2 is the sweet
+// spot here; a real-network workload with more in-flight data per RTT
+// could raise it.)
 const ackFrequency = 2
 
 // NewTracker creates a new ACK tracker for the given packet number space.

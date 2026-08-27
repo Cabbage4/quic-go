@@ -518,7 +518,7 @@ This is a from-scratch, learning-oriented implementation. The numbers below were
 
 ### 📐 Methodology
 
-- **Request rate**: single QUIC connection, serial (one in-flight request at a time) GET requests with tiny (~tens of bytes) payloads, plaintext path (`TLSMode: false`), run via the `http3-go` companion demo (which depends on this `quic-go` SDK): `go run ./cmd/demo -server -addr 127.0.0.1:PORT` and `go run ./cmd/demo -addr 127.0.0.1:PORT -n N`.
+- **Request rate**: single QUIC connection, serial (one in-flight request at a time) GET requests with tiny (~tens of bytes) payloads, **TLS mode** (`Config.TLSMode=true`, full TLS 1.3 + AEAD + header-protection crypto per packet), run via the `http3-go` companion demo (which depends on this `quic-go` SDK): `go run ./cmd/demo -server -addr 127.0.0.1:PORT` and `go run ./cmd/demo -addr 127.0.0.1:PORT -n N`.
 - **Bulk transfer**: 8 MiB echoed back over a single bidirectional stream via `cmd/echo`.
 
 ### 📈 Results — request rate (single connection, loopback, after all optimizations)

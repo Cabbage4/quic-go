@@ -518,7 +518,7 @@ cd quic-go && go run ./cmd/demo
 
 ### 📐 方法
 
-- **请求速率**：单 QUIC 连接、串行（同一时刻只有一个在途请求）GET 请求、极小负载（约几十字节）、明文路径（`TLSMode: false`），经 `http3-go` 配套 demo（依赖本 `quic-go` SDK）运行：`go run ./cmd/demo -server -addr 127.0.0.1:端口` 与 `go run ./cmd/demo -addr 127.0.0.1:端口 -n N`。
+- **请求速率**：单 QUIC 连接、串行（同一时刻只有一个在途请求）GET 请求、极小负载（约几十字节）、**TLS 模式**（`Config.TLSMode=true`，每个数据包都做完整 TLS 1.3 + AEAD + 头部保护加密），经 `http3-go` 配套 demo（依赖本 `quic-go` SDK）运行：`go run ./cmd/demo -server -addr 127.0.0.1:端口` 与 `go run ./cmd/demo -addr 127.0.0.1:端口 -n N`。
 - **大块传输**：经 `cmd/echo` 在一条双向流上回显 8 MiB。
 
 ### 📈 结果 —— 请求速率（单连接、回环、全部优化后）
