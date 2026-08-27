@@ -890,11 +890,11 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 		}
 
 		if len(hdr.Payload) > 0 {
-			_, ferr := c.frameHandler.ProcessFrames(hdr.Payload, pnSpace, hdr.PacketNumber)
+			ackEliciting, ferr := c.frameHandler.ProcessFrames(hdr.Payload, pnSpace, hdr.PacketNumber)
 			if ferr != nil {
 				log.Printf("quic: frame processing error (long header, pn=%d): %v", hdr.PacketNumber, ferr)
 			}
-			c.ackHandler.OnPacketReceived(hdr.PacketNumber, pnSpace, true)
+			c.ackHandler.OnPacketReceived(hdr.PacketNumber, pnSpace, ackEliciting)
 		}
 
 		// If we got a Handshake or HANDSHAKE_DONE, transition to established
@@ -915,11 +915,11 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 			return
 		}
 		if len(hdr.Payload) > 0 {
-			_, ferr := c.frameHandler.ProcessFrames(hdr.Payload, connection.PNSpaceApplication, hdr.PacketNumber)
+			ackEliciting, ferr := c.frameHandler.ProcessFrames(hdr.Payload, connection.PNSpaceApplication, hdr.PacketNumber)
 			if ferr != nil {
 				log.Printf("quic: frame processing error (short header, pn=%d): %v", hdr.PacketNumber, ferr)
 			}
-			c.ackHandler.OnPacketReceived(hdr.PacketNumber, connection.PNSpaceApplication, true)
+			c.ackHandler.OnPacketReceived(hdr.PacketNumber, connection.PNSpaceApplication, ackEliciting)
 		}
 
 		// Flush pending ACKs
