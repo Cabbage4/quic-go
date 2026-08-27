@@ -521,22 +521,25 @@ cd quic-go && go run ./cmd/demo
 - **请求速率**：单 QUIC 连接、串行（同一时刻只有一个在途请求）GET 请求、极小负载（约几十字节）、明文路径（`TLSMode: false`），经 `http3-go` 配套 demo（依赖本 `quic-go` SDK）运行：`go run ./cmd/demo -server -addr 127.0.0.1:端口` 与 `go run ./cmd/demo -addr 127.0.0.1:端口 -n N`。
 - **大块传输**：经 `cmd/echo` 在一条双向流上回显 8 MiB。
 
-### 📈 结果 —— 请求速率（单连接、回环、优化后）
+### 📈 结果 —— 请求速率（单连接、回环、全部优化后）
 
 | 请求数 N | 总耗时 | 吞吐 | 每请求延迟 |
 |---:|---:|---:|---:|
 | 300    | 0.105 s | ~2,860 req/s | 0.35 ms |
-| 1,000  | 0.304 s | ~3,290 req/s | 0.30 ms |
-| 3,000  | 0.946 s | ~3,170 req/s | 0.32 ms |
-| 10,000 | 3.132 s | ~3,190 req/s | 0.31 ms |
+| 1,000  | 0.272 s | ~3,670 req/s | 0.27 ms |
+| 3,000  | 0.810 s | ~3,700 req/s | 0.27 ms |
+| 10,000 | 2.858 s | ~3,500 req/s | 0.29 ms |
 
-每请求延迟现已与 N 无关、约恒定（~0.31 ms）——线性可扩展性已恢复。N=1,000 处相比优化前基线提升约 **26×**（8.0 s → 0.30 s），且 N=10,000 现在约 3 s 完成（此前单 N=1,000 就要 8 s）。
+每请求延迟现已与 N 无关、约恒定（~0.27 ms）——线性可扩展性。N=1,000 处相比优化前基线提升约 **29×**（8.0 s → 0.27 s）。
 
 ### 🔧 做了哪些优化
 
 1. **流退役（主修复）**。`Conn.deliverReceivedStreamData` 每个收包都执行，遍历 `c.streams`（以及 `Manager.AllStreams()`）；而 `Manager.CloseStream` 虽存在但**零调用者**，每个已关闭的流都永久留在这些 map 里 → 每包 O(N²) 扫描。现已在该循环中把完全关闭的流（`eofSent && writeClosed`）从 `c.streams` 与 stream `Manager` 两处一并退役。
-2. **ACK 增量去重**。ACK 帧是累计的，每个 ACK 都重新描述全部已确认集合，接收方每次都重新物化/扫描 → 每个 ACK 一次 O(N)、全程 O(N²)。`AckHandler.NewlyAckedFromFrame` 现在只返回**新**确认的包号（用每空间高水位跳过已上报前缀），使已发帧跟踪与丢包检测每个 ACK 只做 O(增量) 工作。（对请求速率负载而言，此项贡献小于 #1，但正确且有界。）
-3. **`Stream.Write` 分片**。`Stream.Write` 此前把整个 buffer 作为单个 STREAM 帧塞进一个包；8 MiB 写入会产生一个超限 UDP 数据报、被内核静默丢弃（大块传输毫无进展）。`Write` 现已分片为 ≤1100 字节的 STREAM 帧、各自成包，发送侧得以完成。（大块 *回显* 整轮 8 MiB 仍会在传完前卡住——见"仍存在的限制"。）
+2. **ACK 增量去重**。ACK 帧是累计的，每个 ACK 都重新描述全部已确认集合，接收方每次都重新物化/扫描 → 每个 ACK 一次 O(N)、全程 O(N²)。`AckHandler.NewlyAckedFromFrame` 现在只返回**新**确认的包号（用每空间高水位跳过已上报前缀），使已发帧跟踪与丢包检测每个 ACK 只做 O(增量) 工作。
+3. **`Stream.Write` 分片**。`Stream.Write` 此前把整个 buffer 作为单个 STREAM 帧塞进一个超限 UDP 数据报（被内核丢弃）。现已分片为 ≤1100 字节的 STREAM 帧。
+4. **per-connection goroutine 接收模型**。原单 `recvLoop` 对所有连接同步调 `handleIncoming`（串行化）；现每 `Conn` 有独立 `connRecvLoop` goroutine + `recvCh`，连接间并行。
+5. **发送 pacing**。`sendLoop` 按 `cwnd / srtt` token-bucket 限速（clamp [1µs, 5ms]），避免 burst；真实网络减少丢包。
+6. **延迟 ACK（频率=2）**。ACK 频率原为 1（~10 个 ACK 包/请求）。现每 2 个 ack-eliciting 包发一个 ACK（RFC 9000 §13.2.1），ACK 包数减半——**请求速率 +21%**（n=1000: 329ms → 272ms）。
 
 ### ⚠️ 仍存在的限制
 

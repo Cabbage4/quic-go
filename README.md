@@ -521,22 +521,25 @@ This is a from-scratch, learning-oriented implementation. The numbers below were
 - **Request rate**: single QUIC connection, serial (one in-flight request at a time) GET requests with tiny (~tens of bytes) payloads, plaintext path (`TLSMode: false`), run via the `http3-go` companion demo (which depends on this `quic-go` SDK): `go run ./cmd/demo -server -addr 127.0.0.1:PORT` and `go run ./cmd/demo -addr 127.0.0.1:PORT -n N`.
 - **Bulk transfer**: 8 MiB echoed back over a single bidirectional stream via `cmd/echo`.
 
-### 📈 Results — request rate (single connection, loopback, after optimization)
+### 📈 Results — request rate (single connection, loopback, after all optimizations)
 
 | Requests (N) | Total time | Throughput | Latency / request |
 |---:|---:|---:|---:|
 | 300   | 0.105 s | ~2,860 req/s | 0.35 ms |
-| 1,000 | 0.304 s | ~3,290 req/s | 0.30 ms |
-| 3,000 | 0.946 s | ~3,170 req/s | 0.32 ms |
-| 10,000 | 3.132 s | ~3,190 req/s | 0.31 ms |
+| 1,000 | 0.272 s | ~3,670 req/s | 0.27 ms |
+| 3,000 | 0.810 s | ~3,700 req/s | 0.27 ms |
+| 10,000 | 2.858 s | ~3,500 req/s | 0.29 ms |
 
-Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scalability restored. At N=1,000 this is a **~26× improvement** over the pre-optimization baseline (8.0 s → 0.30 s), and N=10,000 now completes in ~3 s (previously N=1,000 alone took 8 s).
+Per-request latency is now ~constant (~0.27 ms) regardless of N — linear scalability. At N=1,000 this is a **~29× improvement** over the pre-optimization baseline (8.0 s → 0.27 s).
 
 ### 🔧 What was optimized
 
 1. **Stream retirement (the dominant fix).** `Conn.deliverReceivedStreamData` runs on every received packet and ranged over `c.streams` (plus `Manager.AllStreams()`); `Manager.CloseStream` existed but had **zero callers**, so every closed stream stayed in those maps for the connection's lifetime → an O(N²) per-packet scan. Fully-closed streams (`eofSent && writeClosed`) are now retired from both `c.streams` and the stream `Manager` in that loop.
-2. **ACK delta de-duplication.** ACK frames are cumulative, so each ACK re-described the full acknowledged set and the receiver re-materialized/re-scanned it every time — an O(N) pass per ACK, O(N²) over the run. `AckHandler.NewlyAckedFromFrame` now emits only the *newly*-acked packet numbers (using a per-space high-water mark to skip the already-reported prefix), so both the sent-frame tracker and loss detection do O(delta) work per ACK. (This was a smaller contributor than #1 for the request-rate workload, but is correct and bounded.)
-3. **Stream.Write chunking.** `Stream.Write` previously emitted the entire buffer as a single STREAM frame in one packet; for an 8 MiB write that produced one oversized UDP datagram the kernel silently dropped (bulk transfers made no progress). `Write` now chunks into ≤1100-byte STREAM frames, each its own packet, so the write side completes. (The bulk *echo* round-trip still stalls before finishing 8 MiB — see "Remaining limitations".)
+2. **ACK delta de-duplication.** ACK frames are cumulative, so each ACK re-described the full acknowledged set and the receiver re-materialized/re-scanned it every time — an O(N) pass per ACK, O(N²) over the run. `AckHandler.NewlyAckedFromFrame` now emits only the *newly*-acked packet numbers (using a per-space high-water mark to skip the already-reported prefix), so both the sent-frame tracker and loss detection do O(delta) work per ACK.
+3. **Stream.Write chunking.** `Stream.Write` previously emitted the entire buffer as a single STREAM frame in one oversized packet (silently dropped). Now chunks into ≤1100-byte STREAM frames.
+4. **Per-connection goroutine model.** The listener's single `recvLoop` previously called `handleIncoming` synchronously for all connections — serializing them. Now each `Conn` has its own `connRecvLoop` goroutine draining a `recvCh`; connections process packets in parallel.
+5. **Send pacing.** `sendLoop` now paces packets at `cwnd / srtt` (token-bucket, clamped [1µs, 5ms]) instead of bursting, reducing loss on real networks.
+6. **Delayed ACK (frequency=2).** ACK frequency was 1 (~10 ACK packets/request). Now ACKs every 2nd ack-eliciting packet (RFC 9000 §13.2.1), halving ACK packets — **+21% request-rate gain** (n=1000: 329ms → 272ms).
 
 ### ⚠️ Remaining limitations
 
