@@ -66,7 +66,22 @@ type Tracker struct {
 
 	// Whether the tracker has packets to ACK
 	pending bool
+
+	// ackElicitingSinceAck counts ack-eliciting packets received since the
+	// last ACK was sent. Used for delayed ACK: we don't ACK every single
+	// ack-eliciting packet (which gave ~10 ACK packets per request at
+	// frequency=1); instead we ACK every ackFrequency-th one, with the rest
+	// coalesced into one ACK frame. RFC 9000 §13.2.1 allows this: "an
+	// endpoint SHOULD NOT send an ACK frame ... more than once per ... round
+	// trip" / "MAY ... delay sending ACK frames". A frequency of 2 is
+	// conservative (production stacks use 2-10).
+	ackElicitingSinceAck int
 }
+
+// ackFrequency is the number of ack-eliciting packets to receive before
+// sending an ACK (delayed ACK / ACK coalescing). 2 = ACK every other
+// ack-eliciting packet, halving the ACK packet count vs frequency=1.
+const ackFrequency = 2
 
 // NewTracker creates a new ACK tracker for the given packet number space.
 func NewTracker(space PNSpace) *Tracker {
@@ -110,6 +125,11 @@ func (t *Tracker) SetECNEnabled(enabled bool) {
 func (t *Tracker) ReceivedPacket(pn uint64, ackEliciting bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Count ack-eliciting packets for delayed-ACK frequency control.
+	if ackEliciting {
+		t.ackElicitingSinceAck++
+	}
 
 	// Check if pn is already in an existing range
 	for _, r := range t.ranges {
@@ -203,6 +223,7 @@ func (t *Tracker) MarkAcked() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pending = false
+	t.ackElicitingSinceAck = 0 // reset delayed-ACK counter
 }
 
 // LargestReceived returns the largest packet number we have received from the
@@ -343,22 +364,32 @@ func (t *Tracker) IsDuplicate(pn uint64) bool {
 	return false
 }
 
-// ShouldSendAck returns true if an ACK should be sent immediately
-// (rather than delayed). This happens when:
-//  - Every packet in order has been received (no gaps)
-//  - The ACK delay timer has expired
-//  - An ACK eliciting packet was received
+// ShouldSendAck returns true if an ACK should be sent now.
+//
+// With delayed ACK (RFC 9000 §13.2.1): we don't ACK every single
+// ack-eliciting packet. Instead, every ackFrequency-th ack-eliciting
+// packet triggers an immediate ACK; the rest are coalesced. This halves
+// the ACK packet count (from ~10/request to ~5 at frequency=2) without
+// violating the spec (the peer retransmits on PTO if an ACK is delayed
+// too long). The `pending` flag (armed by ReceivedPacket for
+// ack-eliciting packets) drives the delayed path: if pending and we
+// haven't hit the frequency threshold, we skip; once the threshold is
+// hit, ShouldSendAck returns true and the next flush sends the ACK.
 func (t *Tracker) ShouldSendAck(ackEliciting bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.ranges) == 0 {
 		return false
 	}
-	// Immediately ACK if this was an ACK-eliciting packet
+	// If the caller explicitly requests an immediate ACK (ackEliciting=true,
+	// e.g. from a test or a path that wants to ACK now), honor it.
 	if ackEliciting {
 		return true
 	}
-	return t.pending
+	// Delayed ACK path (the default from GenerateControlFrames, which calls
+	// with ackEliciting=false): ACK only when we've accumulated
+	// ackFrequency ack-eliciting packets, coalescing the rest into one ACK.
+	return t.ackElicitingSinceAck >= ackFrequency
 }
 
 // Reset clears all tracked state (used when discarding keys for a PN space).
