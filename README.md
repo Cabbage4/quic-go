@@ -525,12 +525,12 @@ This is a from-scratch, learning-oriented implementation. The numbers below were
 
 | Requests (N) | Total time | Throughput | Latency / request |
 |---:|---:|---:|---:|
-| 300   | 0.105 s | ~2,860 req/s | 0.35 ms |
-| 1,000 | 0.196 s | ~5,100 req/s | 0.20 ms |
-| 3,000 | 0.810 s | ~3,700 req/s | 0.27 ms |
-| 10,000 | 1.875 s | ~5,320 req/s | 0.19 ms |
+| 300   | 0.067 s | ~4,480 req/s | 0.22 ms |
+| 1,000 | 0.193 s | ~5,180 req/s | 0.19 ms |
+| 3,000 | 0.567 s | ~5,290 req/s | 0.19 ms |
+| 10,000 | 1.833 s | ~5,460 req/s | 0.18 ms |
 
-Per-request latency is now ~constant (~0.20 ms) regardless of N — linear scalability. At N=1,000 this is a **~40× improvement** over the pre-optimization baseline (8.0 s → 0.20 s).
+Per-request latency is now ~constant (~0.19 ms) regardless of N — linear scalability. At N=1,000 this is a **~41× improvement** over the pre-optimization baseline (8.0 s → 0.19 s).
 
 ### 🔧 What was optimized
 
