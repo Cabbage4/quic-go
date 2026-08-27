@@ -526,11 +526,11 @@ This is a from-scratch, learning-oriented implementation. The numbers below were
 | Requests (N) | Total time | Throughput | Latency / request |
 |---:|---:|---:|---:|
 | 300   | 0.105 s | ~2,860 req/s | 0.35 ms |
-| 1,000 | 0.272 s | ~3,670 req/s | 0.27 ms |
+| 1,000 | 0.196 s | ~5,100 req/s | 0.20 ms |
 | 3,000 | 0.810 s | ~3,700 req/s | 0.27 ms |
-| 10,000 | 2.858 s | ~3,500 req/s | 0.29 ms |
+| 10,000 | 1.875 s | ~5,320 req/s | 0.19 ms |
 
-Per-request latency is now ~constant (~0.27 ms) regardless of N — linear scalability. At N=1,000 this is a **~29× improvement** over the pre-optimization baseline (8.0 s → 0.27 s).
+Per-request latency is now ~constant (~0.20 ms) regardless of N — linear scalability. At N=1,000 this is a **~40× improvement** over the pre-optimization baseline (8.0 s → 0.20 s).
 
 ### 🔧 What was optimized
 
@@ -539,6 +539,8 @@ Per-request latency is now ~constant (~0.27 ms) regardless of N — linear scala
 3. **Stream.Write chunking.** `Stream.Write` previously emitted the entire buffer as a single STREAM frame in one oversized packet (silently dropped). Now chunks into ≤1100-byte STREAM frames.
 4. **Per-connection goroutine model.** The listener's single `recvLoop` previously called `handleIncoming` synchronously for all connections — serializing them. Now each `Conn` has its own `connRecvLoop` goroutine draining a `recvCh`; connections process packets in parallel.
 5. **Send pacing.** `sendLoop` now paces packets at `cwnd / srtt` (token-bucket, clamped [1µs, 5ms]) instead of bursting, reducing loss on real networks.
+6. **Delayed ACK (frequency=2).** ACK frequency was 1 (~10 ACK packets/request). Now ACKs every 2nd ack-eliciting packet (RFC 9000 §13.2.1), halving ACK packets — +21% request-rate gain.
+7. **Reusable delivery buffer.** `deliverReceivedStreamData` did `make([]byte, 65536)` per stream per packet — 64KB alloc × every packet, ~640MB of garbage per 10k-packet run. Replaced with a per-Conn fixed array `Conn.deliverBuf [65536]byte`, eliminating the alloc entirely — +39% request-rate gain.
 6. **Delayed ACK (frequency=2).** ACK frequency was 1 (~10 ACK packets/request). Now ACKs every 2nd ack-eliciting packet (RFC 9000 §13.2.1), halving ACK packets — **+21% request-rate gain** (n=1000: 329ms → 272ms).
 
 ### ⚠️ Remaining limitations

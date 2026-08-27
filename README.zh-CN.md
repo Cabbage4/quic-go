@@ -526,11 +526,11 @@ cd quic-go && go run ./cmd/demo
 | 请求数 N | 总耗时 | 吞吐 | 每请求延迟 |
 |---:|---:|---:|---:|
 | 300    | 0.105 s | ~2,860 req/s | 0.35 ms |
-| 1,000  | 0.272 s | ~3,670 req/s | 0.27 ms |
+| 1,000  | 0.196 s | ~5,100 req/s | 0.20 ms |
 | 3,000  | 0.810 s | ~3,700 req/s | 0.27 ms |
-| 10,000 | 2.858 s | ~3,500 req/s | 0.29 ms |
+| 10,000 | 1.875 s | ~5,320 req/s | 0.19 ms |
 
-每请求延迟现已与 N 无关、约恒定（~0.27 ms）——线性可扩展性。N=1,000 处相比优化前基线提升约 **29×**（8.0 s → 0.27 s）。
+每请求延迟现已与 N 无关、约恒定（~0.20 ms）——线性可扩展性。N=1,000 处相比优化前基线提升约 **40×**（8.0 s → 0.20 s）。
 
 ### 🔧 做了哪些优化
 
@@ -540,6 +540,7 @@ cd quic-go && go run ./cmd/demo
 4. **per-connection goroutine 接收模型**。原单 `recvLoop` 对所有连接同步调 `handleIncoming`（串行化）；现每 `Conn` 有独立 `connRecvLoop` goroutine + `recvCh`，连接间并行。
 5. **发送 pacing**。`sendLoop` 按 `cwnd / srtt` token-bucket 限速（clamp [1µs, 5ms]），避免 burst；真实网络减少丢包。
 6. **延迟 ACK（频率=2）**。ACK 频率原为 1（~10 个 ACK 包/请求）。现每 2 个 ack-eliciting 包发一个 ACK（RFC 9000 §13.2.1），ACK 包数减半——**请求速率 +21%**（n=1000: 329ms → 272ms）。
+7. **复用 64KB 投递缓冲**。`deliverReceivedStreamData` 此前每包每流 `make([]byte, 65536)`——64KB alloc × 每包，万包级 stress ~640MB 垃圾。改为 per-Conn 固定数组 `Conn.deliverBuf [65536]byte`，消除该 alloc——**请求速率 +39%**。
 
 ### ⚠️ 仍存在的限制
 
