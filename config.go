@@ -131,6 +131,14 @@ func (c *Config) toTransportParams() transport.Params {
 
 // === Public Types ===
 
+// recvPacket carries a received UDP datagram + its source address to a
+// connection's per-connection receive goroutine.
+type recvPacket struct {
+	data    []byte
+	raddr   *net.UDPAddr
+	isLong  bool
+}
+
 // Listener is a QUIC server that accepts incoming connections.
 type Listener struct {
 	udpConn *net.UDPConn
@@ -160,6 +168,14 @@ type Conn struct {
 	listener   *Listener
 
 	config *Config
+
+	// recvCh is the per-connection inbound packet channel. The listener's
+	// recvLoop reads UDP datagrams and dispatches to the matching Conn's
+	// recvCh (non-blocking); a per-connection goroutine (connRecvLoop)
+	// drains it and calls handleIncoming. This decouples connections so a
+	// slow one doesn't stall the others — the single-recvLoop synchronous
+	// model serialized all connections.
+	recvCh chan recvPacket
 
 	// Connection-layer subsystems
 	packetIO   *connection.PacketIO

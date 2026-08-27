@@ -163,8 +163,20 @@ func (l *Listener) handlePacket(data []byte, raddr *net.UDPAddr) {
 	l.connTableMu.Unlock()
 
 	if ok {
-		// Route to existing connection
-		c.handleIncoming(data, raddr, isLongHeader)
+		// Route to existing connection — dispatch to its per-connection
+		// receive channel (non-blocking). A per-connection goroutine
+		// (connRecvLoop) drains recvCh and calls handleIncoming, so
+		// connections are processed in parallel and a slow one doesn't
+		// stall the listener's recvLoop or other connections.
+		select {
+		case c.recvCh <- recvPacket{data: data, raddr: raddr, isLong: isLongHeader}:
+		case <-c.closeCh:
+		default:
+			// recvCh full — connection is slow to drain. Drop the packet
+			// rather than blocking the listener (which would stall ALL
+			// connections). The peer will retransmit if it was
+			// ack-eliciting; non-ack-eliciting drops are recoverable.
+		}
 		return
 	}
 
@@ -212,6 +224,7 @@ func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, radd
 		remoteAddr:     raddr,
 		listener:       l,
 		config:         l.config,
+		recvCh:         make(chan recvPacket, 256),
 		sendQueue:      make(chan []byte, 256),
 		acceptStreamCh: make(chan *Stream, 64),
 		closeCh:        make(chan struct{}),
@@ -249,11 +262,20 @@ func (l *Listener) createNewConnection(hdr *header.LongHeader, data []byte, radd
 		close(c.closeCh)
 	})
 
-	// Start the connection's send loop
+	// Start the connection's send loop and per-connection receive goroutine.
+	// recvCh + connRecvLoop decouple this connection from the listener's
+	// single recvLoop: handleIncoming runs here, in parallel with other
+	// connections, instead of serializing all of them on the listener.
 	go c.sendLoop()
+	go c.connRecvLoop()
 
-	// Process the initial packet
-	c.handleIncoming(data, raddr, true)
+	// The initial packet is dispatched through recvCh too (not handled
+	// synchronously) so the connection's receive goroutine processes it
+	// consistently.
+	select {
+	case c.recvCh <- recvPacket{data: data, raddr: raddr, isLong: true}:
+	case <-c.closeCh:
+	}
 
 	// In TLS mode, drive the handshake (server side)
 	if l.config.TLSMode {
@@ -537,6 +559,7 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 		udpConn:        udpConn,
 		remoteAddr:     udpAddr,
 		config:         config,
+		recvCh:         make(chan recvPacket, 256),
 		sendQueue:      make(chan []byte, 256),
 		acceptStreamCh: make(chan *Stream, 64),
 		closeCh:        make(chan struct{}),
@@ -569,6 +592,7 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 
 	// Start receiving
 	go c.clientRecvLoop()
+	go c.connRecvLoop()
 
 	// Start send loop
 	go c.sendLoop()
@@ -688,14 +712,53 @@ func (c *Conn) clientRecvLoop() {
 
 		c.remoteAddr = raddr
 		isLong := len(data) > 0 && data[0]&0x80 != 0
-		c.handleIncoming(data, raddr, isLong)
+		// Dispatch to our own recvCh — connRecvLoop processes it.
+		select {
+		case c.recvCh <- recvPacket{data: data, raddr: raddr, isLong: isLong}:
+		case <-c.closeCh:
+			return
+		}
+	}
+}
+
+// connRecvLoop is the per-connection receive goroutine. It drains recvCh
+// and calls handleIncoming for each packet. Because this runs in a
+// dedicated goroutine per connection, a slow handleIncoming (e.g. a large
+// ACK frame) blocks only this connection, not the listener or other
+// connections. This is the key difference from the old model where
+// handlePacket called handleIncoming synchronously on the listener's
+// single recvLoop goroutine.
+func (c *Conn) connRecvLoop() {
+	for {
+		select {
+		case <-c.closeCh:
+			return
+		case pkt := <-c.recvCh:
+			c.handleIncoming(pkt.data, pkt.raddr, pkt.isLong)
+		}
 	}
 }
 
 // === Connection Methods ===
 
 // sendLoop processes the send queue and writes packets to the network.
+//
+// Pacing: without rate limiting, the sendLoop drains sendQueue as fast as
+// the UDP socket allows — a burst of back-to-back packets that can overflow
+// intermediate buffers, trigger loss, and produce the ACK-frequency=1
+// chattiness (~10 packets/request). A simple token-bucket pacer spaces
+// packets out: the minimum inter-packet gap is pacingInterval, derived
+// from the congestion window and smoothed RTT (cwnd / srtt), clamped to a
+// small floor so we never go fully silent. This smooths the send rate,
+// reduces loss-induced retransmission stalls, and makes throughput more
+// stable.
 func (c *Conn) sendLoop() {
+	// pacingInterval is recomputed periodically from recovery stats.
+	// Start at 0 (no pacing) so the handshake and small exchanges aren't
+	// slowed; once we have an RTT estimate, pacing kicks in.
+	var pacingInterval time.Duration
+	var lastSend time.Time
+
 	for {
 		select {
 		case <-c.closeCh:
@@ -704,11 +767,50 @@ func (c *Conn) sendLoop() {
 			if c.remoteAddr == nil {
 				continue
 			}
+
+			// Recompute pacing interval from recovery stats every send.
+			// Rate = cwnd / srtt; interval = packetSize / rate.
+			// We approximate packetSize as len(data).
+			if c.recovery != nil {
+				srtt := c.recovery.SmoothedRTT()
+				cwnd := c.recovery.CongestionWindow()
+				if srtt > 0 && cwnd > 0 {
+					// interval = srtt * (packetSize / cwnd)
+					// = how long to wait so we send at cwnd/srtt bytes/s.
+					pktBytes := uint64(len(data))
+					if pktBytes > cwnd {
+						pktBytes = cwnd
+					}
+					// srtt * pktBytes / cwnd, but do it in float to avoid
+					// integer truncation giving 0.
+					ratio := float64(pktBytes) / float64(cwnd)
+					pacingInterval = time.Duration(float64(srtt) * ratio)
+					// Clamp: at least 1µs (don't go fully unbounded),
+					// at most 5ms (don't over-throttle small-window cases).
+					if pacingInterval < time.Microsecond {
+						pacingInterval = time.Microsecond
+					}
+					if pacingInterval > 5*time.Millisecond {
+						pacingInterval = 5 * time.Millisecond
+					}
+				}
+			}
+
+			// Pace: if we sent recently and the interval hasn't elapsed,
+			// sleep the remainder before sending.
+			if pacingInterval > 0 && !lastSend.IsZero() {
+				elapsed := time.Since(lastSend)
+				if elapsed < pacingInterval {
+					time.Sleep(pacingInterval - elapsed)
+				}
+			}
+
 			if c.isServer {
 				c.udpConn.WriteToUDP(data, c.remoteAddr)
 			} else {
 				c.udpConn.Write(data)
 			}
+			lastSend = time.Now()
 		}
 	}
 }
