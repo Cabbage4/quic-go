@@ -840,9 +840,24 @@ func (c *Conn) handleIncoming(data []byte, raddr *net.UDPAddr, isLongHeader bool
 		// After the handshake is complete, driveHandshakeLoop has exited
 		// and there is no risk of deadlock with the TLS session mutex.
 		// Flush ACK and flow control frames in response to received data.
+		// In the application-data phase, only the Application PN space can
+		// have pending control frames; skip the Initial/Handshake spaces
+		// (GenerateControlFrames for them always returns nil post-
+		// handshake) to save 2 lock acquisitions per packet.
 		session := c.keyStore.TLSSession()
 		if session != nil && session.HandshakeComplete() {
-			c.packetIO.FlushPendingControlFrames()
+			ctrlFrames := c.frameHandler.GenerateControlFrames(connection.PNSpaceApplication)
+			if len(ctrlFrames) > 0 {
+				c.packetIO.SendPacket(crypto.EncryptionApplication, ctrlFrames)
+			}
+			// Flush CRYPTO data (rare in app phase).
+			for _, level := range []crypto.EncryptionLevel{crypto.EncryptionApplication} {
+				if data := c.keyStore.GetCryptoData(level); len(data) > 0 {
+					c.packetIO.SendPacket(level, []frames.Frame{
+						&frames.Crypto{Offset: 0, Data: data},
+					})
+				}
+			}
 		}
 		// Deliver any received stream data to SDK-level Stream wrappers
 		c.deliverReceivedStreamData()
