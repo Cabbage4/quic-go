@@ -540,7 +540,7 @@ cd quic-go && go run ./cmd/demo
 
 ### ⚠️ 仍存在的限制
 
-- **大块传输不稳定（flaky）。** `Stream.Write` 分片（见"做了哪些优化"#3）修复了发送侧：现能完成（8 MiB 约 52ms 入队）且回显数据有流动。成功时，4 MiB 回显整轮约 130ms（~60 MiB/s / ~500 Mbit/s）、1 MiB 约 60ms（~33 MiB/s）——相比之前的"永不完成"是重大变化。但**不稳定**：约 ⅔ 的运行会卡住（15s 内无进展），与传输大小、服务端是否全新无关。卡顿是高包率下接收/投递路径的每连接竞态，根因尚未定位（卡顿时两端均非 CPU 瓶颈，`sample` 显示双方均空闲/阻塞）。8 MiB 比 1–4 MiB 更易卡。（请求速率负载用的是极小 payload，不受影响。）
+- **大块传输：~80% 成功，~44 MiB/s。** 之前的"flaky 卡顿"很大程度是 bench 的 artifact：测试写完数据但不发 FIN，服务端 echo `Read` 永远收不到 EOF、无限等待。`Stream.Close()` 在 `Write` 后发 FIN，4 MiB echo 约 180ms（~44 MiB/s / ~350 Mbit/s）完成，约 8/10 成功。剩余 ~20% 卡顿是残留竞态（可能 Close 与最后一段 Write 的 sendQueue flush 竞态）。SDK 侧修复（非阻塞 readCh + PushBack + 删 O(N log N) loss-detection sort）正确、保留。（请求速率不受影响：~3060 req/s。）
 - **ACK 频率实际为 1**：每收一个 ack-eliciting 包就单独回一个 ACK 包（无合并、无延迟 ACK）；每个请求在链路上仍约 ~10 个包。
 - 类 NewReno 拥塞控制，无 pacing。
 
@@ -548,7 +548,7 @@ cd quic-go && go run ./cmd/demo
 
 吞吐仍远低于生产级栈（参考 [quic-go](https://github.com/quic-go/quic-go) 可达多 Gbit/s、数万 req/s），对一个单文件单职责的学习实现属预期。按优先级，剩余提升空间最大的是：
 
-1. **定位并修复大块传输的不稳定竞态** —— `Write` 现已正确分片，成功时可达 ~60 MiB/s，但约 ⅔ 运行会卡住；每连接接收路径竞态（卡顿时双方均空闲/阻塞）是剩余阻塞项。
+1. **修复剩余 ~20% bulk 卡顿** —— bulk 现 ~80% 成功 @ ~44 MiB/s（FIN-after-Write 修复了主要卡顿）；剩余 ~20% 疑为 Close 与 Write flush 竞态。
 2. **ACK 合并 / 延迟 ACK** —— 把每请求 ~10 个包降到 ~2-3。
 3. Pacing 与更现代的拥塞控制（如 BBR）。
 

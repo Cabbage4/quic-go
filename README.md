@@ -540,7 +540,7 @@ Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scala
 
 ### ⚠️ Remaining limitations
 
-- **Bulk transfer is flaky.** `Stream.Write` chunking (see "What was optimized" #3) fixed the write side: it now completes (8 MiB queued in ~52 ms) and echo data flows. When it succeeds, a 4 MiB echo round-trip completes in ~130 ms (~60 MiB/s / ~500 Mbit/s) and 1 MiB in ~60 ms (~33 MiB/s) — a major change from "never completes". But it is **flaky**: ~⅔ of runs stall (no progress within 15 s) regardless of transfer size or whether the server is fresh. The stall is a per-connection race in the receive/delivery path under high packet rate, root cause not yet pinned (neither side is CPU-bound during the stall; `sample` shows both idle/blocked). 8 MiB stalls more often than 1–4 MiB. (The request-rate workload uses tiny payloads and is unaffected.)
+- **Bulk transfer: ~80% success at ~44 MiB/s.** The earlier "flaky stall" was largely a benchmark artifact: the test wrote data without sending FIN, so the server's echo `Read` never saw EOF and waited forever. With `Stream.Close()` after `Write` (sending FIN), 4 MiB echo completes in ~180 ms (~44 MiB/s / ~350 Mbit/s) on ~8/10 runs. The remaining ~20% stalls are a residual race (possibly Close racing with the last Write's sendQueue flush). The SDK-side fixes (non-blocking `readCh` + `PushBack` + removing the O(N log N) loss-detection sort) are correct and remain. (Request-rate workload unaffected: ~3,060 req/s.)
 - **ACK frequency is effectively 1**: one ACK packet per ack-eliciting received packet (no coalescing or delayed ACK); each request still costs roughly ~10 packets on the wire.
 - NewReno-style congestion control, no pacing.
 
@@ -548,7 +548,7 @@ Per-request latency is now ~constant (~0.31 ms) regardless of N — linear scala
 
 Throughput is still well below a production stack (the reference [quic-go](https://github.com/quic-go/quic-go) reaches multi-Gbit/s and tens of thousands of req/s), which is expected for a single-file-per-concern learning implementation. The highest-leverage remaining improvements, in priority order:
 
-1. **Pin & fix the bulk-transfer flaky race** — `Write` now chunks correctly and transfers reach ~60 MiB/s when they succeed, but ~⅔ of runs stall; a per-connection receive-path race (both sides idle/blocked during the stall) is the remaining blocker.
+1. **Fix the residual ~20% bulk stall** — bulk now succeeds ~80% at ~44 MiB/s (FIN-after-Write fixed the main stall); remaining ~20% is likely a Close-vs-Write-flush race.
 2. **ACK coalescing / delayed ACK** — collapse ~10 packets/request to ~2-3.
 3. Pacing and a more modern congestion controller (e.g. BBR).
 
