@@ -945,17 +945,22 @@ func (c *Conn) deliverReceivedStreamData() {
 			continue
 		}
 
-		// Read any available data from the manager's stream — but only if
-		// readCh has room. deliverReceivedStreamData runs on the recvLoop
-		// (holding streamsMu) for EVERY packet; a blocking readCh send here
-		// would stall the entire receive path, and since the peer's ACKs
-		// can't be processed either, the sender deadlocks too. This was the
-		// bulk-transfer flaky stall (both sides idle/blocked). So we probe
-		// readCh capacity first: if full, skip this stream for this packet
-		// (the data stays buffered in the manager stream and is re-read on
-		// the next packet's delivery pass).
-		buf := make([]byte, 65536)
-		n, err := mgrStream.Read(buf)
+	// Read any available data from the manager's stream — but only if
+	// readCh has room. deliverReceivedStreamData runs on the recvLoop
+	// (holding streamsMu) for EVERY packet; a blocking readCh send here
+	// would stall the entire receive path, and since the peer's ACKs
+	// can't be processed either, the sender deadlocks too. This was the
+	// bulk-transfer flaky stall (both sides idle/blocked). So we probe
+	// readCh capacity first: if full, skip this stream for this packet
+	// (the data stays buffered in the manager stream and is re-read on
+	// the next packet's delivery pass).
+	//
+	// Reusable buffer: c.deliverBuf eliminates a 64KB alloc per packet
+	// (was ~640MB garbage per 10k-packet stress run). Safe because this
+	// runs single-threaded on connRecvLoop and the data is copied out
+	// to a per-chunk slice immediately.
+	buf := c.deliverBuf[:]
+	n, err := mgrStream.Read(buf)
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
@@ -1013,7 +1018,7 @@ func (c *Conn) deliverReceivedStreamData() {
 			// Read initial data. Non-blocking send (same reason as the main
 			// loop above: this runs on recvLoop holding streamsMu; a blocking
 			// send stalls the whole receive path).
-			buf := make([]byte, 65536)
+			buf := c.deliverBuf[:]
 			n, _ := mgrStream.Read(buf)
 			if n > 0 {
 				data := make([]byte, n)

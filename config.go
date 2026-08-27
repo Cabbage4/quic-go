@@ -211,6 +211,15 @@ type Conn struct {
 	nextClientUni   uint64
 	nextServerBidi  uint64
 	nextServerUni   uint64
+
+	// deliverBuf is a reusable read buffer for deliverReceivedStreamData.
+	// Previously the function did make([]byte, 65536) per stream per
+	// received packet — 64KB alloc × every packet, ~640MB of garbage per
+	// 10k-packet stress run. This reusable buffer eliminates that. Safe
+	// because deliverReceivedStreamData runs single-threaded (on the
+	// connRecvLoop goroutine, holding streamsMu), and the data read into
+	// it is immediately copied out to a per-chunk slice for readCh.
+	deliverBuf [65536]byte
 }
 
 // Stream is a QUIC stream that implements io.ReadWriteCloser.
